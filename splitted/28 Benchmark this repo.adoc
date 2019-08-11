@@ -1,0 +1,317 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Benchmark this repo
+
+TODO: didn't fully port during refactor after 3b0a343647bed577586989fb702b760bd280844a. Reimplementing should not be hard.
+
+In this section document how benchmark builds and runs of this repo, and how to investigate what the bottleneck is.
+
+Ideally, we should setup an automated build server that benchmarks those things continuously for us, but our <<travis>> attempt failed.
+
+So currently, we are running benchmarks manually when it seems reasonable and uploading them to: https://github.com/cirosantilli/linux-kernel-module-cheat-regression
+
+All benchmarks were run on the <<p51>> machine, unless stated otherwise.
+
+Run all benchmarks and upload the results:
+
+....
+cd ..
+git clone https://github.com/cirosantilli/linux-kernel-module-cheat-regression
+cd -
+./bench-all -A
+....
+
+=== Continuous integraion
+
+We have exploreed a few Continuous integration solutions.
+
+We haven't setup any of them yet.
+
+==== Travis
+
+We tried to automate it on Travis with link:.travis.yml[] but it hits the current 50 minute job timeout: https://travis-ci.org/cirosantilli/linux-kernel-module-cheat/builds/296454523 And I bet it would likely hit a disk maxout either way if it went on.
+
+==== CircleCI
+
+This setup sucessfully built gem5 on every commit: link:.circleci/config.yml[]
+
+Enabling it is however blocked on: https://github.com/cirosantilli/linux-kernel-module-cheat/issues/79 so we disabled the builds on the web UI.
+
+If that ever gets done, we will also need to:
+
+* convert this to a nightly with a workflow, to save server resources: https://circleci.com/docs/2.0/configuration-reference/#triggers
+* download the prebuilt disk images and enable caches to save the images across runs
+
+A build took about 1 hour of a core, and the free tier allows for 1000 minutes per month: https://circleci.com/pricing/ so about 17 hours. The cheapest non-free setup seems to be 50 dollars per month gets us infinite build minutes per month and 2 containers, so we could scale things to run in under 24 hours.
+
+There is no result reporting web UI however... but neither does GitLab CI: https://gitlab.com/gitlab-org/gitlab-ce/issues/17081
+
+=== Benchmark this repo benchmarks
+
+==== Benchmark Linux kernel boot
+
+Run all kernel boot benchmarks for one arch:
+
+....
+./build-test-boot --size 3 && ./test-boot --all-archs --all-emulators --size 3
+cat "$(./getvar test_boot_benchmark_file)"
+....
+
+Sample results at 8fb9db39316d43a6dbd571e04dd46ae73915027f:
+
+....
+cmd ./run --arch x86_64 --eval './linux/poweroff.out'
+time 8.25
+exit_status 0
+
+cmd ./run --arch x86_64 --eval './linux/poweroff.out' --kvm
+time 1.22
+exit_status 0
+
+cmd ./run --arch x86_64 --eval './linux/poweroff.out' --trace exec_tb
+time 8.83
+exit_status 0
+instructions 2244297
+
+cmd ./run --arch x86_64 --eval 'm5 exit' --emulator gem5
+time 213.39
+exit_status 0
+instructions 318486337
+
+cmd ./run --arch arm --eval './linux/poweroff.out'
+time 6.62
+exit_status 0
+cmd ./run --arch arm --eval './linux/poweroff.out' --trace exec_tb
+time 6.90
+exit_status 0
+instructions 776374
+
+cmd ./run --arch arm --eval 'm5 exit' --emulator gem5
+time 118.46
+exit_status 0
+instructions 153023392
+
+cmd ./run --arch arm --eval 'm5 exit' --emulator gem5 -- --cpu-type=HPI --caches --l2cache --l1d_size=1024kB --l1i_size=1024kB --l2_size=1024kB --l3_size=1024kB
+time 2250.40
+exit_status 0
+instructions 151981914
+
+cmd ./run --arch aarch64 --eval './linux/poweroff.out'
+time 4.94
+exit_status 0
+
+cmd ./run --arch aarch64 --eval './linux/poweroff.out' --trace exec_tb
+time 5.04
+exit_status 0
+instructions 233162
+
+cmd ./run --arch aarch64 --eval 'm5 exit' --emulator gem5
+time 70.89
+exit_status 0
+instructions 124346081
+
+cmd ./run --arch aarch64 --eval 'm5 exit' --emulator gem5 -- --cpu-type=HPI --caches --l2cache --l1d_size=1024kB --l1i_size=1024kB --l2_size=1024kB --l3_size=1024kB
+time 381.86
+exit_status 0
+instructions 124564620
+
+cmd ./run --arch aarch64 --eval 'm5 exit' --emulator gem5 --gem5-build-type fast
+time 58.00
+exit_status 0
+instructions 124346081
+
+cmd ./run --arch aarch64 --eval 'm5 exit' --emulator gem5 --gem5-build-type debug
+time 1022.03
+exit_status 0
+instructions 124346081
+....
+
+TODO: aarch64 gem5 and QEMU use the same kernel, so why is the gem5 instruction count so much much higher?
+
+===== gem5 arm HPI boot takes much longer than aarch64
+
+TODO 62f6870e4e0b384c4bd2d514116247e81b241251 takes 33 minutes to finish at 62f6870e4e0b384c4bd2d514116247e81b241251:
+
+....
+cmd ./run --arch arm --eval 'm5 exit' --emulator gem5 -- --caches --cpu-type=HPI
+....
+
+while aarch64 only 7 minutes.
+
+I had previously documented on README 10 minutes at: 2eff007f7c3458be240c673c32bb33892a45d3a0 found with `git log` search for `10 minutes`. But then I checked out there, run it, and kernel panics before any messages come out. Lol?
+
+Logs of the runs can be found at: https://github.com/cirosantilli-work/gem5-issues/tree/0df13e862b50ae20fcd10bae1a9a53e55d01caac/arm-hpi-slow
+
+The cycle count is higher for `arm`, 350M vs 250M for `aarch64`, not nowhere near the 5x runtime time increase.
+
+A quick look at the boot logs show that they are basically identical in structure: the same operations appear more ore less on both, and there isn't one specific huge time pit in arm: it is just that every individual operation seems to be taking a lot longer.
+
+===== gem5 x86_64 DerivO3CPU boot panics
+
+https://github.com/cirosantilli-work/gem5-issues/issues/2
+
+....
+Kernel panic - not syncing: Attempted to kill the idle task!
+....
+
+==== Benchmark builds
+
+The build times are calculated after doing `./configure` and https://buildroot.org/downloads/manual/manual.html#_offline_builds[`make source`], which downloads the sources, and basically benchmarks the <<benchmark-internets,Internet>>.
+
+Sample build time at 2c12b21b304178a81c9912817b782ead0286d282: 28 minutes, 15 with full ccache hits. Breakdown: 19% GCC, 13% Linux kernel, 7% uclibc, 6% host-python, 5% host-qemu, 5% host-gdb, 2% host-binutils
+
+Buildroot automatically stores build timestamps as milliseconds since Epoch. Convert to minutes:
+
+....
+awk -F: 'NR==1{start=$1}; END{print ($1 - start)/(60000.0)}' "$(./getvar buildroot_build_build_dir)/build-time.log"
+....
+
+Or to conveniently do a clean build without affecting your current one:
+
+....
+./bench-all -b
+cat ../linux-kernel-module-cheat-regression/*/build-time.log
+....
+
+===== Find which packages are making the build slow and big
+
+....
+./build-buildroot -- graph-build graph-size graph-depends
+cd "$(./getvar buildroot_build_dir)/graphs"
+xdg-open build.pie-packages.pdf
+xdg-open graph-depends.pdf
+xdg-open graph-size.pdf
+....
+
+[[prebuilt-toolchain]]
+====== Buildroot use prebuilt host toolchain
+
+The biggest build time hog is always GCC, and it does not look like we can use a precompiled one: https://stackoverflow.com/questions/10833672/buildroot-environment-with-host-toolchain
+
+===== Benchmark Buildroot build baseline
+
+This is the minimal build we could expect to get away with.
+
+We will run this whenever the Buildroot submodule is updated.
+
+On the upstream Buildroot repo at :
+
+....
+./bench-all -B
+....
+
+Sample time on 2017.08: 11 minutes, 7 with full ccache hits. Breakdown: 47% GCC, 15% Linux kernel, 9% uclibc, 5% host-binutils. Conclusions:
+
+* we have bloated our kernel build 3x with all those delicious features :-)
+* GCC time increased 1.5x by our bloat, but its percentage of the total was greatly reduced, due to new packages being introduced.
++
+`make graph-depends` shows that most new dependencies come from QEMU and GDB, which we can't get rid of anyways.
+
+A quick look at the system monitor reveals that the build switches between times when:
+
+* CPUs are at a max, memory is fine. So we must be CPU / memory speed bound. I bet that this happens during heavy compilation.
+* CPUs are not at a max, and memory is fine. So we are likely disk bound. I bet that this happens during configuration steps.
+
+This is consistent with the fact that ccache reduces the build time only partially, since ccache should only overcome the CPU bound compilation steps, but not the disk bound ones.
+
+The instructions counts varied very little between the baseline and LKMC, so runtime overhead is not a big deal apparently.
+
+Size:
+
+* `bzImage`: 4.4M
+* `rootfs.cpio`: 1.6M
+
+Zipped: 4.9M, `rootfs.cpio` deflates 50%, `bzImage` almost nothing.
+
+===== Benchmark gem5 build
+
+How long it takes to build gem5 itself.
+
+We will update this whenever the gem5 submodule is updated.
+
+Sample results at gem5 2a9573f5942b5416fb0570cf5cb6cdecba733392: 10 to 12 minutes.
+
+Get results with:
+
+....
+./bench-all --emulator gem5
+tail -n+1 ../linux-kernel-module-cheat-regression/*/gem5-bench-build-*.txt
+....
+
+====== Benchmark gem5 single file change rebuild time
+
+This is the critical development parameter, and is dominated by the link time of huge binaries.
+
+In order to benchmark it better, make a comment only change to:
+
+....
+vim submodules/gem5/src/sim/main.cc
+....
+
+then rebuild with:
+
+....
+./build-gem5 --arch aarch64 --verbose
+....
+
+and then copy the link command to a separate Bash file. Then you can time and modify it easily.
+
+Some approximate reference values on <<p51>>:
+
+* `opt`
+** unmodified: 10 seconds
+** hack with `-fuse-ld=gold`: 6 seconds. Huge improvement!
+* `debug`
+** unmodified: 14 seconds. Why two times slower than unmodified?
+** hack with `-fuse-ld=gold`: `internal error in read_cie, at ../../gold/ehframe.cc:919` on Ubuntu 18.04 all GCC. TODO report.
+* `fast`
+** `--force-lto`: 1 minute. Slower as expected, since more optimizations are done at link time. `--force-lto` is only used for `fast`, and it adds `-flto` to the build.
+
+ramfs made no difference, the kernel must be caching files in memory very efficiently already.
+
+Tested at: d4b3e064adeeace3c3e7d106801f95c14637c12f + 1.
+
+=== Benchmark machines
+
+==== P51
+
+Lenovo ThinkPad https://www3.lenovo.com/gb/en/laptops/thinkpad/p-series/P51/p/22TP2WPWP51[P51 laptop]:
+
+* 2500 USD in 2018 (high end)
+* Intel Core i7-7820HQ Processor (8MB Cache, up to 3.90GHz) (4 cores 8 threads)
+* 32GB(16+16) DDR4 2400MHz SODIMM
+* 512GB SSD PCIe TLC OPAL2
+* NVIDIA Quadro M1200 Mobile, latest Ubuntu supported proprietary driver
+* Latest Ubuntu
+
+=== Benchmark Internets
+
+==== 38Mbps internet
+
+2c12b21b304178a81c9912817b782ead0286d282:
+
+* shallow clone of all submodules: 4 minutes.
+* `make source`: 2 minutes
+
+Google M-lab speed test: 36.4Mbps
+
+=== Benchmark this repo bibliography
+
+gem5:
+
+* https://www.mail-archive.com/gem5-users@gem5.org/msg15262.html[] which parts of the gem5 code make it slow
+* what are the minimum system requirements:
+** https://stackoverflow.com/questions/47997565/gem5-system-requirements-for-decent-performance/48941793#48941793
+** https://github.com/gem5/gem5/issues/25
+

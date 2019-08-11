@@ -1,0 +1,394 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Buildroot
+
+=== Introduction to Buildroot
+
+https://en.wikipedia.org/wiki/Buildroot[Buildroot] is a set of Make scripts that download and compile from source compatible versions of:
+
+* GCC
+* Linux kernel
+* C standard library: Buildroot supports several implementations, see: xref:libc-choice[xrefstyle=full]
+* https://en.wikipedia.org/wiki/BusyBox[BusyBox]: provides the shell and basic command line utilities
+
+It therefore produces a pristine, blob-less, debuggable setup, where all moving parts are configured to work perfectly together.
+
+Perhaps the awesomeness of Buildroot only sinks in once you notice that all it takes is 4 commands as explained at https://stackoverflow.com/questions/47557262/how-to-download-the-torvalds-linux-kernel-master-recompile-it-and-boot-it-wi/49349237#49349237
+
+....
+git clone https://github.com/buildroot/buildroot
+cd buildroot
+git checkout 2018.02
+make qemu_aarch64_virt_defconfig
+make olddefconfig
+time make BR2_JLEVEL="$(nproc)"
+qemu-system-aarch64 -M virt -cpu cortex-a57 -nographic -smp 1 -kernel output/images/Image -append "root=/dev/vda console=ttyAMA0" -netdev user,id=eth0 -device virtio-net-device,netdev=eth0 -drive file=output/images/rootfs.ext4,if=none,format=raw,id=hd0 -device virtio-blk-device,drive=hd0
+....
+
+This repo basically wraps around that, and tries to make everything even more awesome for kernel developers.
+
+The downsides of Buildroot are:
+
+* the first build takes a while, but it is well worth it
+* the selection of software packages is relatively limited if compared to Debian, e.g. no Java or Python package in guest out of the box.
++
+In theory, any software can be packaged, and the Buildroot side is easy.
++
+The hard part is dealing with crappy third party build systems and huge dependency chains.
+
+==== gem5 Ruby build
+
+Ruby is a system that includes the SLICC domain specific language to describe memory systems: http://gem5.org/Ruby
+
+It seems to have usage outside of gem5, but the naming overload with the link:https://en.wikipedia.org/wiki/Ruby_(programming_language)[Ruby programming language], which also has link:https://thoughtbot.com/blog/writing-a-domain-specific-language-in-ruby[domain specific languages] as a concept, makes it impossible to google anything about it!
+
+Ruby is activated at compile time with the `PROTOCOL` flag, which specifies the desired memory system time.
+
+For example, to use a two level https://en.wikipedia.org/wiki/MESI_protocol[MESI] https://en.wikipedia.org/wiki/Cache_coherence[cache coherence protocol], we can do:
+
+....
+./build-gem5 --arch aarch64 --gem5-build-id ruby -- PROTOCOL=MESI_Two_Level
+....
+
+and during build we see a humongous line of type:
+
+....
+[   SLICC] src/mem/protocol/MESI_Two_Level.slicc -> ARM/mem/protocol/AccessPermission.cc, ARM/mem/protocol/AccessPermission.hh, ...
+....
+
+which shows that dozens of C++ files are being generated from Ruby SLICC.
+
+TODO observe it doing something during a run.
+
+The relevant source files live in the source tree under:
+
+....
+src/mem/protocol/MESI_Two_Level*
+....
+
+We already pass the `SLICC_HTML` flag by default to the build, which generates an HTML summary of each memory protocol under:
+
+....
+xdg-open "$(./getvar --arch aarch64 --gem5-build-id ruby gem5_build_build_dir)/ARM/mem/protocol/html/index.html"
+....
+
+=== Custom Buildroot configs
+
+We provide the following mechanisms:
+
+* `./build-buildroot --config-fragment data/br2`: append the Buildroot configuration file `data/br2` to a single build. Must be passed every time you run `./build`. The format is the same as link:buildroot_config/default[].
+* `./build-buildroot --config 'BR2_SOME_OPTION="myval"'`: append a single option to a single build.
+
+For example, if you decide to <<enable-buildroot-compiler-optimizations>> after an initial build is finished, you must <<clean-the-build>> and rebuild:
+
+....
+./build-buildroot \
+  --config 'BR2_OPTIMIZE_3=y' \
+  --config 'BR2_PACKAGE_SAMPLE_PACKAGE=y' \
+  --
+  sample_package-dirclean \
+  sample_package-reconfigure \
+;
+....
+
+as explained at: https://buildroot.org/downloads/manual/manual.html#rebuild-pkg
+
+The clean is necessary because the source files didn't change, so `make` would just check the timestamps and not build anything.
+
+You will then likely want to make those more permanent as explained at: xref:default-command-line-arguments[xrefstyle=full].
+
+==== Enable Buildroot compiler optimizations
+
+If you are benchmarking compiled programs instead of hand written assembly, remember that we configure Buildroot to disable optimizations by default with:
+
+....
+BR2_OPTIMIZE_0=y
+....
+
+to improve the debugging experience.
+
+You will likely want to change that to:
+
+....
+BR2_OPTIMIZE_3=y
+....
+
+Our link:buildroot_packages/sample_package[] package correctly forwards the Buildroot options to the build with `$(TARGET_CONFIGURE_OPTS)`, so you don't have to do any extra work.
+
+Don't forget to do that if you are <<add-new-buildroot-packages,adding a new package>> with your own build system.
+
+Then, you have two choices:
+
+* if you already have a full `-O0` build, you can choose to rebuild just your package of interest to save some time as described at: xref:custom-buildroot-configs[xrefstyle=full]
++
+....
+./build-buildroot \
+  --config 'BR2_OPTIMIZE_3=y' \
+  --config 'BR2_PACKAGE_SAMPLE_PACKAGE=y' \
+  -- \
+  sample_package-dirclean \
+  sample_package-reconfigure \
+;
+....
++
+However, this approach might not be representative since calls to an unoptimized libc and other libraries will have a negative performance impact.
++
+Maybe you can get away with rebuilding libc, but I'm not sure that it will work properly.
++
+Kernel-wise it should be fine though as mentioned at: xref:kernel-o0[xrefstyle=full]
+* <<clean-the-build,clean the build>> and rebuild from scratch:
++
+....
+mv out out~
+./build-buildroot --config 'BR2_OPTIMIZE_3=y'
+....
+
+=== Find Buildroot options with make menuconfig
+
+`make menuconfig` is a convenient way to find Buildroot configurations:
+
+....
+cd "$(./getvar buildroot_build_dir)"
+make menuconfig
+....
+
+Hit `/` and search for the settings.
+
+Save and quit.
+
+....
+diff -u .config.olg .config
+....
+
+Then copy and paste the diff additions to link:buildroot_config/default[] to make them permanent.
+
+=== Change user
+
+At startup, we login automatically as the `root` user.
+
+If you want to switch to another user to test some permissions, we have already created an `user0` user through the link:user_table[] file, and you can just login as that user with:
+
+....
+login user0
+....
+
+and password:
+
+....
+a
+....
+
+Then test that the user changed with:
+
+....
+id
+....
+
+which gives:
+
+....
+uid=1000(user0) gid=1000(user0) groups=1000(user0)
+....
+
+==== Login as a non-root user without password
+
+Replace on `inittab`:
+
+....
+::respawn:-/bin/sh
+....
+
+with:
+
+....
+::respawn:-/bin/login -f user0
+....
+
+`-f` forces login without asking for the password.
+
+=== Add new Buildroot packages
+
+First, see if you can't get away without actually adding a new package, for example:
+
+* if you have a standalone C file with no dependencies besides the C standard library to be compiled with GCC, just add a new file under link:buildroot_packages/sample_package[] and you are done
+* if you have a dependency on a library, first check if Buildroot doesn't have a package for it already with `ls buildroot/package`. If yes, just enable that package as explained at: xref:custom-buildroot-configs[xrefstyle=full]
+
+If none of those methods are flexible enough for you, you can just fork or hack up link:buildroot_packages/sample_package[] the sample package to do what you want.
+
+For how to use that package, see: xref:buildroot_packages-directory[xrefstyle=full].
+
+Then iterate trying to do what you want and reading the manual until it works: https://buildroot.org/downloads/manual/manual.html
+
+=== Remove Buildroot packages
+
+Once you've built a package in to the image, there is no easy way to remove it.
+
+Documented at: https://github.com/buildroot/buildroot/blob/2017.08/docs/manual/rebuilding-packages.txt#L90[]
+
+Also mentioned at: https://stackoverflow.com/questions/47320800/how-to-clean-only-target-in-buildroot
+
+See this for a sample manual workaround: xref:parsec-uninstall[xrefstyle=full].
+
+=== BR2_TARGET_ROOTFS_EXT2_SIZE
+
+When adding new large package to the Buildroot root filesystem, it may fail with the message:
+
+....
+Maybe you need to increase the filesystem size (BR2_TARGET_ROOTFS_EXT2_SIZE)
+....
+
+The solution is to simply add:
+
+....
+./build-buildroot --config 'BR2_TARGET_ROOTFS_EXT2_SIZE="512M"'
+....
+
+where 512Mb is "large enough".
+
+Note that dots cannot be used as in `1.5G`, so just use Megs as in `1500M` instead.
+
+Unfortunately, TODO we don't have a perfect way to find the right value for `BR2_TARGET_ROOTFS_EXT2_SIZE`. One good heuristic is:
+
+....
+du -hsx "$(./getvar --arch arm buildroot_target_dir)"
+....
+
+Some promising ways to overcome this problem include:
+
+* <<squashfs>>
+TODO benchmark: would gem5 suffer a considerable disk read performance hit due to decompressing SquashFS?
+* libguestfs: https://serverfault.com/questions/246835/convert-directory-to-qemu-kvm-virtual-disk-image/916697#916697[], in particular http://libguestfs.org/guestfish.1.html#vfs-minimum-size[`vfs-minimum-size`]
+* use methods described at: xref:gem5-restore-new-script[xrefstyle=full] instead of putting builds on the root filesystem
+
+Bibliography: https://stackoverflow.com/questions/49211241/is-there-a-way-to-automatically-detect-the-minimum-required-br2-target-rootfs-ex
+
+==== SquashFS
+
+https://en.wikipedia.org/wiki/SquashFS[SquashFS] creation with `mksquashfs` does not take fixed sizes, and I have successfully booted from it, but it is readonly, which is unacceptable.
+
+But then we could mount https://wiki.debian.org/ramfs[ramfs] on top of it with <<overlayfs>> to make it writable, but my attempts failed exactly as mentioned at <<overlayfs>>.
+
+This is the exact unanswered question: https://unix.stackexchange.com/questions/343484/mounting-squashfs-image-with-read-write-overlay-for-rootfs
+
+[[rpath]]
+=== Buildroot rebuild is slow when the root filesystem is large
+
+Buildroot is not designed for large root filesystem images, and the rebuild becomes very slow when we add a large package to it.
+
+This is due mainly to the `pkg-generic` `GLOBAL_INSTRUMENTATION_HOOKS` sanitation which go over the entire tree doing complex operations... I no like, in particular `check_bin_arch` and `check_host_rpath`
+
+We have applied https://github.com/cirosantilli/buildroot/commit/983fe7910a73923a4331e7d576a1e93841d53812[983fe7910a73923a4331e7d576a1e93841d53812] to out Buildroot fork which removes part of the pain by not running:
+
+....
+>>>   Sanitizing RPATH in target tree
+....
+
+which contributed to a large part of the slowness.
+
+Test how Buildroot deals with many files with:
+
+....
+./build-buildroot \
+  --config 'BR2_PACKAGE_LKMC_MANY_FILES=y' \
+  -- \
+  lkmc_many_files-reconfigure \
+  |& \
+  ts -i '%.s' \
+;
+./build-buildroot |& ts -i '%.s'
+....
+
+and notice how the second build, which does not rebuilt the package at all, still gets stuck in the `RPATH` check forever without our Buildroot patch.
+
+=== Report upstream bugs
+
+When asking for help on upstream repositories outside of this repository, you will need to provide the commands that you are running in detail without referencing our scripts.
+
+For example, QEMU developers will only want to see the final QEMU command that you are running.
+
+For the configure and build, search for the `Building` and `Configuring` parts of the build log, then try to strip down all Buildroot related paths, to keep only options that seem to matter.
+
+We make that easy by building commands as strings, and then echoing them before evaling.
+
+So for example when you run:
+
+....
+./run --arch arm
+....
+
+the very first stdout output of that script is the actual QEMU command that is being run.
+
+The command is also saved to a file for convenience:
+
+....
+cat "$(./getvar --arch arm run_cmd_file)"
+....
+
+which you can manually modify and execute during your experiments later:
+
+....
+vim "$(./getvar --arch arm run_cmd_file)"
+./"$(./getvar --arch arm run_cmd_file)"
+....
+
+If you are not already on the master of the given component, you can do that neatly with <<build-variants>>.
+
+E.g., to check if a QEMU bug is still present on `master`, you can do as explained at <<qemu-build-variants>>:
+
+....
+git -C "$(./getvar qemu_source_dir)" checkout master
+./build-qemu --clean --qemu-build-id master
+./build-qemu --qemu-build-id master
+git -C "$(./getvar qemu_source_dir)" checkout -
+./run --qemu-build-id master
+....
+
+Then, you will also want to do a <<bisection>> to pinpoint the exact commit to blame, and CC that developer.
+
+Finally, give the images you used save upstream developers' time as shown at: xref:release-zip[xrefstyle=full].
+
+For Buildroot problems, you should wither provide the config you have:
+
+....
+./getvar buildroot_config_file
+....
+
+or try to reproduce with a minimal config, see: https://github.com/cirosantilli/buildroot/tree/in-tree-package-master
+
+=== libc choice
+
+Buildroot supports several libc implementations, including:
+
+* https://en.wikipedia.org/wiki/GNU_C_Library[glibc]
+* https://en.wikipedia.org/wiki/UClibc[uClibc]
+
+We currently use glibc, which is selected by:
+
+....
+BR2_TOOLCHAIN_BUILDROOT_GLIBC=y
+....
+
+Ideally we would like to use uClibc, as it is more minimal and easier to understand, but unfortunately there are some very few packages that use some weird glibc extension that uClibc hasn't implemented yet, e.g.:
+
+* <<selinux>>. Trivial unmerged fix at: http://lists.busybox.net/pipermail/buildroot/2017-July/197793.html just missing the uClibc option to expose `fts.h`...
+* <<stress>>
+
+The full list of unsupported packages can be found by grepping the Buildroot source:
+
+....
+git -C "$(./getvar buildroot_source_dir)" grep 'depends on BR2_TOOLCHAIN_USES_GLIBC'
+....
+
+One "downside" of glibc is that it exercises much more kernel functionality on its more bloated pre-main init, which breaks user mode C hello worlds more often, see: xref:user-mode-simulation-with-glibc[xrefstyle=full]. I quote "downside" because glibc is actually exposing emulator bugs which we should actually go and fix.
+

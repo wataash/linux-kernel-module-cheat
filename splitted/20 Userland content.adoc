@@ -1,0 +1,166 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Userland content
+
+This section contains userland content, such as <<c>>, <<cpp>> and <<posix>> examples.
+
+Getting started at: xref:userland-setup[xrefstyle=full]
+
+Userland assembly content is located at: xref:userland-assembly[xrefstyle=full]. It was split from this section basically because we were hitting the HTML `h6` limit, stupid web :-)
+
+This content makes up the bulk of the link:userland/[] directory.
+
+The quickest way to run the arch agnostic examples, which comprise the majority of the examples, is natively as shown at: xref:userland-setup-getting-started-natively[xrefstyle=full]
+
+This section was originally moved in here from: https://github.com/cirosantilli/cpp-cheat
+
+=== C
+
+Programs under link:userland/c/[] are examples of https://en.wikipedia.org/wiki/ANSI_C[ANSI C] programming:
+
+* link:userland/c/hello.c[]
+* `main` and environment
+** link:userland/c/return0.c[]
+** link:userland/c/return1.c[]
+** link:userland/c/return2.c[]
+** link:userland/c/exit0.c[]
+** link:userland/c/exit1.c[]
+** link:userland/c/exit2.c[]
+** link:userland/c/print_argv.c[]
+* Standard library
+** `assert.h`
+*** link:userland/c/assert_fail.c[]
+** `stdlib.h`
+*** exit
+**** link:userland/c/abort.c[]
+*** malloc
+**** link:userland/c/out_of_memory.c[]
+** `stdio.h`
+*** link:userland/c/stderr.c[]
+*** link:userland/c/getchar.c[]
+*** File IO
+**** link:userland/c/file_write_read.c[]
+* Fun
+** link:userland/c/infinite_loop.c[]
+
+==== GCC C extensions
+
+===== C empty struct
+
+Example: link:userland/gcc/empty_struct.c[]
+
+Documentation: https://gcc.gnu.org/onlinedocs/gcc-8.2.0/gcc/Empty-Structures.html#Empty-Structures
+
+Question: https://stackoverflow.com/questions/24685399/c-empty-struct-what-does-this-mean-do
+
+===== OpenMP
+
+GCC implements the <<OpenMP>> threading implementation: https://stackoverflow.com/questions/3949901/pthreads-vs-openmp
+
+Example: link:userland/gcc/openmp.c[]
+
+The implementation is built into GCC itself. It is enabled at GCC compile time by `BR2_GCC_ENABLE_OPENMP=y` on Buildroot, and at program compile time by `-fopenmp`.
+
+It seems to be easier to use for compute parallelism and more language agnostic than POSIX threads.
+
+pthreads are more versatile though and allow for a superset of OpenMP.
+
+The implementation lives under `libgomp` in the GCC tree, and is documented at: https://gcc.gnu.org/onlinedocs/libgomp/
+
+`strace` shows that OpenMP makes `clone()` syscalls in Linux. TODO: does it actually call `pthread_` functions, or does it make syscalls directly? Or in other words, can it work on <<freestanding-programs>>? A quick grep shows many references to pthreads.
+
+[[cpp]]
+=== C++
+
+Programs under link:userland/cpp/[] are examples of https://en.wikipedia.org/wiki/C%2B%2B#Standardization[ISO C] programming.
+
+* link:userland/cpp/empty.cpp[]
+* link:userland/cpp/hello.cpp[]
+
+[[cpp-multithreading]]
+==== C++ multithreading
+
+* https://en.cppreference.com/w/cpp/header/thread[`<thread>`]
+** link:userland/cpp/count.cpp[] Exemplifies: `std::this_thread::sleep_for`
+** link:userland/cpp/thread_hardware_concurrency.cpp[] `std::thread::hardware_concurrency`
+* https://en.cppreference.com/w/cpp/header/atomic[`<atomic>`]: <<cpp17>> 32 "Atomic operations library"
+** link:userland/cpp/atomic.cpp[]
+
+[[cpp-standards]]
+==== C++ standards
+
+Like for C, you have to pay for the standards... insane. So we just use the closest free drafts instead.
+
+https://stackoverflow.com/questions/81656/where-do-i-find-the-current-c-or-c-standard-documents
+
+[[cpp17]]
+===== C++17 N4659 standards draft
+
+http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2017/n4659.pdf
+
+=== POSIX
+
+Programs under link:userland/posix/[] are examples of POSIX C programming.
+
+These links provide a clear overview of what POSIX is:
+
+* https://stackoverflow.com/questions/1780599/what-is-the-meaning-of-posix/31865755#31865755
+* https://unix.stackexchange.com/questions/11983/what-exactly-is-posix/220877#220877
+
+==== unistd.h
+
+* link:userland/posix/count.c[] illustrates `sleep()`
+* link:userland/posix/count_to.c[] minor variation of link:userland/posix/count.c[]
+
+==== pthreads
+
+POSIX' multithreading API. This was for a looong time the only "portable" multithreading alternative, until <<cpp-multithreading,C++11 finally added threads>>, thus also extending the portability to Windows.
+
+* link:userland/posix/pthread_count.c[]
+* link:userland/posix/pthread_deadlock.c[]
+* link:userland/posix/pthread_self.c[]
+
+==== sysconf
+
+https://pubs.opengroup.org/onlinepubs/9699919799/functions/sysconf.html
+
+Examples:
+
+* link:userland/posix/sysconf.c[]
+* link:userland/linux/sysconf.c[] showcases Linux extensions to POSIX
+
+Get lots of info on the system configuration.
+
+The constants can also be viewed accessed on my Ubuntu 18.04 host with:
+
+....
+getconf -a
+....
+
+`getconf` is also specified by POSIX at: https://pubs.opengroup.org/onlinepubs/9699919799/utilities/getconf.html but not the `-a` option which shows all configurations.
+
+=== Userland multithreading
+
+The following sections are related to multithreading in userland:
+
+* language topics:
+** <<cpp-multithreading>>
+** <<pthreads>>
+* ISA topics:
+** <<x86-thread-synchronization-primitives>>
+** <<arm-lse>>
+* emulator topics:
+** <<number-of-cores-in-qemu-user-mode>>
+** <<number-of-cores-in-gem5-user-mode>>
+

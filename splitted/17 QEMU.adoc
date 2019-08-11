@@ -1,0 +1,1289 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== QEMU
+
+=== Introduction to QEMU
+
+https://en.wikipedia.org/wiki/QEMU[QEMU] is a system simulator: it simulates a CPU and devices such as interrupt handlers, timers, UART, screen, keyboard, etc.
+
+If you are familiar with https://en.wikipedia.org/wiki/VirtualBox[VirtualBox], then QEMU then basically does the same thing: it opens a "window" inside your desktop that can run an operating system inside your operating system.
+
+Also both can use very similar techniques: either https://en.wikipedia.org/wiki/Binary_translation[binary translation] or <<KVM>>. VirtualBox' binary translator is / was based on QEMU's it seems: https://en.wikipedia.org/wiki/VirtualBox#Software-based_virtualization
+
+The huge advantage of QEMU over VirtualBox is that is supports cross arch simulation, e.g. simulate an ARM guest on an x86 host.
+
+QEMU is likely the leading cross arch system simulator as of 2018. It is even the default <<android>> simulator that developers get with Android Studio 3 to develop apps without real hardware.
+
+Another advantage of QEMU over virtual box is that it doesn't have Oracle' hands all all over it, more like RedHat + ARM.
+
+Another advantage of QEMU is that is has no nice configuration GUI. Because who needs GUIs when you have 50 million semi-documented CLI options? Android Studio adds a custom GUI configuration tool on top of it.
+
+QEMU is also supported by Buildroot in-tree, see e.g.: https://github.com/buildroot/buildroot/blob/2018.05/configs/qemu_aarch64_virt_defconfig We however just build our own manually with link:build-qemu[], as it gives more flexibility, and building QEMU is very easy!
+
+All of this makes QEMU the natural choice of reference system simulator for this repo.
+
+=== Disk persistency
+
+We disable disk persistency for both QEMU and gem5 by default, to prevent the emulator from putting the image in an unknown state.
+
+For QEMU, this is done by passing the `snapshot` option to `-drive`, and for gem5 it is the default behaviour.
+
+If you hack up our link:run[] script to remove that option, then:
+
+....
+./run --eval-after 'date >f;poweroff'
+
+....
+
+followed by:
+
+....
+./run --eval-after 'cat f'
+....
+
+gives the date, because `poweroff` without `-n` syncs before shutdown.
+
+The `sync` command also saves the disk:
+
+....
+sync
+....
+
+When you do:
+
+....
+./build-buildroot
+....
+
+the disk image gets overwritten by a fresh filesystem and you lose all changes.
+
+Remember that if you forcibly turn QEMU off without `sync` or `poweroff` from inside the VM, e.g. by closing the QEMU window, disk changes may not be saved.
+
+Persistency is also turned off when booting from <<initrd>> with a CPIO instead of with a disk.
+
+Disk persistency is useful to re-run shell commands from the history of a previous session with `Ctrl-R`, but we felt that the loss of determinism was not worth it.
+
+==== gem5 disk persistency
+
+TODO how to make gem5 disk writes persistent?
+
+As of cadb92f2df916dbb47f428fd1ec4932a2e1f0f48 there are some `read_only` entries in the <<gem5-config-ini>> under cow sections, but hacking them to true did not work:
+
+....
+diff --git a/configs/common/FSConfig.py b/configs/common/FSConfig.py
+index 17498c42b..76b8b351d 100644
+--- a/configs/common/FSConfig.py
++++ b/configs/common/FSConfig.py
+@@ -60,7 +60,7 @@ os_types = { 'alpha' : [ 'linux' ],
+            }
+
+ class CowIdeDisk(IdeDisk):
+-    image = CowDiskImage(child=RawDiskImage(read_only=True),
++    image = CowDiskImage(child=RawDiskImage(read_only=False),
+                          read_only=False)
+
+     def childImage(self, ci):
+....
+
+The directory of interest is `src/dev/storage`.
+
+=== gem5 qcow2
+
+qcow2 does not appear supported, there are not hits in the source tree, and there is a mention on Nate's 2009 wishlist: http://gem5.org/Nate%27s_Wish_List
+
+This would be good to allow storing smaller sparse ext2 images locally on disk.
+
+=== Snapshot
+
+QEMU allows us to take snapshots at any time through the monitor.
+
+You can then restore CPU, memory and disk state back at any time.
+
+qcow2 filesystems must be used for that to work.
+
+To test it out, login into the VM with and run:
+
+....
+./run --eval-after 'umount /mnt/9p/*;./count.sh'
+....
+
+On another shell, take a snapshot:
+
+....
+./qemu-monitor savevm my_snap_id
+....
+
+The counting continues.
+
+Restore the snapshot:
+
+....
+./qemu-monitor loadvm my_snap_id
+....
+
+and the counting goes back to where we saved. This shows that CPU and memory states were reverted.
+
+The `umount` is needed because snapshotting conflicts with <<9p>>, which we felt is a more valuable default. If you forget to unmount, the following error appears on the QEMU monitor:
+
+.....
+Migration is disabled when VirtFS export path '/linux-kernel-module-cheat/out/x86_64/buildroot/build' is mounted in the guest using mount_tag 'host_out'
+.....
+
+We can also verify that the disk state is also reversed. Guest:
+
+....
+echo 0 >f
+....
+
+Monitor:
+
+....
+./qemu-monitor savevm my_snap_id
+....
+
+Guest:
+
+....
+echo 1 >f
+....
+
+Monitor:
+
+....
+./qemu-monitor loadvm my_snap_id
+....
+
+Guest:
+
+....
+cat f
+....
+
+And the output is `0`.
+
+Our setup does not allow for snapshotting while using <<initrd>>.
+
+Bibliography: https://stackoverflow.com/questions/40227651/does-qemu-emulator-have-checkpoint-function/48724371#48724371
+
+==== Snapshot internals
+
+Snapshots are stored inside the `.qcow2` images themselves.
+
+They can be observed with:
+
+....
+"$(./getvar buildroot_host_dir)/bin/qemu-img" info "$(./getvar qcow2_file)"
+....
+
+which after `savevm my_snap_id` and `savevm asdf` contains an output of type:
+
+....
+image: out/x86_64/buildroot/images/rootfs.ext2.qcow2
+file format: qcow2
+virtual size: 512M (536870912 bytes)
+disk size: 180M
+cluster_size: 65536
+Snapshot list:
+ID        TAG                 VM SIZE                DATE       VM CLOCK
+1         my_snap_id              47M 2018-04-27 21:17:50   00:00:15.251
+2         asdf                    47M 2018-04-27 21:20:39   00:00:18.583
+Format specific information:
+    compat: 1.1
+    lazy refcounts: false
+    refcount bits: 16
+    corrupt: false
+....
+
+As a consequence:
+
+* it is possible to restore snapshots across boots, since they stay on the same image the entire time
+* it is not possible to use snapshots with <<initrd>> in our setup, since we don't pass `-drive` at all when initrd is enabled
+
+=== Device models
+
+This section documents:
+
+* how to interact with peripheral hardware device models through device drivers
+* how to write your own hardware device models for our emulators, see also: https://stackoverflow.com/questions/28315265/how-to-add-a-new-device-in-qemu-source-code
+
+For the more complex interfaces, we focus on simplified educational devices, either:
+
+* present in the QEMU upstream:
+** <<qemu-edu>>
+* added in https://github.com/cirosantilli/qemu[our fork of QEMU]:
+** <<pci_min>>
+** <<platform_device>>
+
+==== PCI
+
+Only tested in x86.
+
+===== pci_min
+
+PCI driver for our minimal `pci_min.c` QEMU fork device:
+
+....
+./run -- -device lkmc_pci_min
+....
+
+then:
+
+....
+insmod pci_min.ko
+....
+
+Sources:
+
+* Kernel module: link:kernel_modules/pci_min.c[].
+* QEMU device: https://github.com/cirosantilli/qemu/blob/lkmc/hw/misc/lkmc_pci_min.c
+
+Outcome:
+
+....
+<4>[   10.608241] pci_min: loading out-of-tree module taints kernel.
+<6>[   10.609935] probe
+<6>[   10.651881] dev->irq = 11
+lkmc_pci_min mmio_write addr = 0 val = 12345678 size = 4
+<6>[   10.668515] irq_handler irq = 11 dev = 251
+lkmc_pci_min mmio_write addr = 4 val = 0 size = 4
+....
+
+What happened:
+
+* right at probe time, we write to a register
+* our hardware model is coded such that it generates an interrupt when written to
+* the Linux kernel interrupt handler write to another register, which tells the hardware to stop sending interrupts
+
+Kernel messages and printks from inside QEMU are shown all together, to see that more clearly, run in <<qemu-graphic-mode>> instead.
+
+We don't enable the device by default because it does not work for vanilla QEMU, which we often want to test with this repository.
+
+Probe already does a MMIO write, which generates an IRQ and tests everything.
+
+[[qemu-edu]]
+===== QEMU edu PCI device
+
+Small upstream educational PCI device:
+
+....
+./qemu_edu.sh
+....
+
+This tests a lot of features of the edu device, to understand the results, compare the inputs with the documentation of the hardware: https://github.com/qemu/qemu/blob/v2.12.0/docs/specs/edu.txt
+
+Sources:
+
+* kernel module: link:kernel_modules/qemu_edu.c[]
+* QEMU device: https://github.com/qemu/qemu/blob/v2.12.0/hw/misc/edu.c
+* test script: link:rootfs_overlay/lkmc/qemu_edu.sh[]
+
+Works because we add to our default QEMU CLI:
+
+....
+-device edu
+....
+
+This example uses:
+
+* the QEMU `edu` educational device, which is a minimal educational in-tree PCI example
+* the `pci.ko` kernel module, which exercises the `edu` hardware.
++
+I've contacted the awesome original author author of `edu` https://github.com/jirislaby[Jiri Slaby], and he told there is no official kernel module example because this was created for a kernel module university course that he gives, and he didn't want to give away answers. https://github.com/cirosantilli/how-to-teach-efficiently[I don't agree with that philosophy], so students, cheat away with this repo and go make startups instead.
+
+TODO exercise DMA on the kernel module. The `edu` hardware model has that feature:
+
+* https://stackoverflow.com/questions/32592734/are-there-any-dma-driver-example-pcie-and-fpga/44716747#44716747
+* https://stackoverflow.com/questions/17913679/how-to-instantiate-and-use-a-dma-driver-linux-module
+
+===== Manipulate PCI registers directly
+
+In this section we will try to interact with PCI devices directly from userland without kernel modules.
+
+First identify the PCI device with:
+
+....
+lspci
+....
+
+In our case for example, we see:
+
+....
+00:06.0 Unclassified device [00ff]: Device 1234:11e8 (rev 10)
+00:07.0 Unclassified device [00ff]: Device 1234:11e9
+....
+
+which we identify as being `edu` and `pci_min` respectively by the magic numbers: `1234:11e?`
+
+Alternatively, we can also do use the QEMU monitor:
+
+....
+./qemu-monitor info qtree
+....
+
+which gives:
+
+....
+      dev: lkmc_pci_min, id ""
+        addr = 07.0
+        romfile = ""
+        rombar = 1 (0x1)
+        multifunction = false
+        command_serr_enable = true
+        x-pcie-lnksta-dllla = true
+        x-pcie-extcap-init = true
+        class Class 00ff, addr 00:07.0, pci id 1234:11e9 (sub 1af4:1100)
+        bar 0: mem at 0xfeb54000 [0xfeb54007]
+      dev: edu, id ""
+        addr = 06.0
+        romfile = ""
+        rombar = 1 (0x1)
+        multifunction = false
+        command_serr_enable = true
+        x-pcie-lnksta-dllla = true
+        x-pcie-extcap-init = true
+        class Class 00ff, addr 00:06.0, pci id 1234:11e8 (sub 1af4:1100)
+        bar 0: mem at 0xfea00000 [0xfeafffff]
+....
+
+See also: https://serverfault.com/questions/587189/list-all-devices-emulated-for-a-vm/913622#913622
+
+Read the configuration registers as binary:
+
+....
+hexdump /sys/bus/pci/devices/0000:00:06.0/config
+....
+
+Get nice human readable names and offsets of the registers and some enums:
+
+....
+setpci --dumpregs
+....
+
+Get the values of a given config register from its human readable name, either with either bus or device id:
+
+....
+setpci -s 0000:00:06.0 BASE_ADDRESS_0
+setpci -d 1234:11e9 BASE_ADDRESS_0
+....
+
+Note however that `BASE_ADDRESS_0` also appears when you do:
+
+....
+lspci -v
+....
+
+as:
+
+....
+Memory at feb54000
+....
+
+Then you can try messing with that address with <<dev-mem>>:
+
+....
+devmem 0xfeb54000 w 0x12345678
+....
+
+which writes to the first register of our <<pci_min>> device.
+
+The device then fires an interrupt at irq 11, which is unhandled, which leads the kernel to say you are a bad boy:
+
+....
+lkmc_pci_min mmio_write addr = 0 val = 12345678 size = 4
+<5>[ 1064.042435] random: crng init done
+<3>[ 1065.567742] irq 11: nobody cared (try booting with the "irqpoll" option)
+....
+
+followed by a trace.
+
+Next, also try using our <<irq-ko>> IRQ monitoring module before triggering the interrupt:
+
+....
+insmod irq.ko
+devmem 0xfeb54000 w 0x12345678
+....
+
+Our kernel module handles the interrupt, but does not acknowledge it like our proper <<pci_min>> kernel module, and so it keeps firing, which leads to infinitely many messages being printed:
+
+....
+handler irq = 11 dev = 251
+....
+
+===== pciutils
+
+There are two versions of `setpci` and `lspci`:
+
+* a simple one from BusyBox
+* a more complete one from https://github.com/pciutils/pciutils[pciutils] which Buildroot has a package for, and is the default on Ubuntu 18.04 host. This is the one we enable by default.
+
+===== Introduction to PCI
+
+The PCI standard is non-free, obviously like everything in low level: https://pcisig.com/specifications but Google gives several illegal PDF hits :-)
+
+And of course, the best documentation available is: http://wiki.osdev.org/PCI
+
+Like every other hardware, we could interact with PCI on x86 using only IO instructions and memory operations.
+
+But PCI is a complex communication protocol that the Linux kernel implements beautifully for us, so let's use the kernel API.
+
+Bibliography:
+
+* edu device source and spec in QEMU tree:
+** https://github.com/qemu/qemu/blob/v2.7.0/hw/misc/edu.c
+** https://github.com/qemu/qemu/blob/v2.7.0/docs/specs/edu.txt
+* http://www.zarb.org/~trem/kernel/pci/pci-driver.c inb outb runnable example (no device)
+* LDD3 PCI chapter
+* another QEMU device + module, but using a custom QEMU device:
+** https://github.com/levex/kernel-qemu-pci/blob/31fc9355161b87cea8946b49857447ddd34c7aa6/module/levpci.c
+** https://github.com/levex/kernel-qemu-pci/blob/31fc9355161b87cea8946b49857447ddd34c7aa6/qemu/hw/char/lev-pci.c
+* https://is.muni.cz/el/1433/podzim2016/PB173/um/65218991/ course given by the creator of the edu device. In Czech, and only describes API
+* http://nairobi-embedded.org/linux_pci_device_driver.html
+
+===== PCI BFD
+
+`lspci -k` shows something like:
+
+....
+00:04.0 Class 00ff: 1234:11e8 lkmc_pci
+....
+
+Meaning of the first numbers:
+
+....
+<8:bus>:<5:device>.<3:function>
+....
+
+Often abbreviated to BDF.
+
+* bus: groups PCI slots
+* device: maps to one slot
+* function: https://stackoverflow.com/questions/19223394/what-is-the-function-number-in-pci/44735372#44735372
+
+Sometimes a fourth number is also added, e.g.:
+
+....
+0000:00:04.0
+....
+
+TODO is that the domain?
+
+Class: pure magic: https://www-s.acm.illinois.edu/sigops/2007/roll_your_own/7.c.1.html TODO: does it have any side effects? Set in the edu device at:
+
+....
+k->class_id = PCI_CLASS_OTHERS
+....
+
+===== PCI BAR
+
+https://stackoverflow.com/questions/30190050/what-is-base-address-register-bar-in-pcie/44716618#44716618
+
+Each PCI device has 6 BAR IOs (base address register) as per the PCI spec.
+
+Each BAR corresponds to an address range that can be used to communicate with the PCI.
+
+Each BAR is of one of the two types:
+
+* `IORESOURCE_IO`: must be accessed with `inX` and `outX`
+* `IORESOURCE_MEM`: must be accessed with `ioreadX` and `iowriteX`. This is the saner method apparently, and what the edu device uses.
+
+The length of each region is defined by the hardware, and communicated to software via the configuration registers.
+
+The Linux kernel automatically parses the 64 bytes of standardized configuration registers for us.
+
+QEMU devices register those regions with:
+
+....
+memory_region_init_io(&edu->mmio, OBJECT(edu), &edu_mmio_ops, edu,
+                "edu-mmio", 1 << 20);
+pci_register_bar(pdev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &edu->mmio);
+....
+
+==== GPIO
+
+TODO: broken. Was working before we moved `arm` from `-M versatilepb` to `-M virt` around af210a76711b7fa4554dcc2abd0ddacfc810dfd4. Either make it work on `-M virt` if that is possible, or document precisely how to make it work with `versatilepb`, or hopefully `vexpress` which is newer.
+
+QEMU does not have a very nice mechanism to observe GPIO activity: https://raspberrypi.stackexchange.com/questions/56373/is-it-possible-to-get-the-state-of-the-leds-and-gpios-in-a-qemu-emulation-like-t/69267#69267
+
+The best you can do is to hack our link:build[] script to add:
+
+....
+HOST_QEMU_OPTS='--extra-cflags=-DDEBUG_PL061=1'
+....
+
+where http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.ddi0190b/index.html[PL061] is the dominating ARM Holdings hardware that handles GPIO.
+
+Then compile with:
+
+....
+./build-buildroot --arch arm --config-fragment buildroot_config/gpio
+./build-linux --config-fragment linux_config/gpio
+....
+
+then test it out with:
+
+....
+./gpio.sh
+....
+
+Source: link:rootfs_overlay/lkmc/gpio.sh[]
+
+Buildroot's Linux tools package provides some GPIO CLI tools: `lsgpio`, `gpio-event-mon`, `gpio-hammer`, TODO document them here.
+
+==== LEDs
+
+TODO: broken when `arm`  moved to `-M virt`, same as <<gpio>>.
+
+Hack QEMU's `hw/misc/arm_sysctl.c` with a printf:
+
+....
+static void arm_sysctl_write(void *opaque, hwaddr offset,
+                            uint64_t val, unsigned size)
+{
+    arm_sysctl_state *s = (arm_sysctl_state *)opaque;
+
+    switch (offset) {
+    case 0x08: /* LED */
+        printf("LED val = %llx\n", (unsigned long long)val);
+....
+
+and then rebuild with:
+
+....
+./build-qemu --arch arm
+./build-linux --arch arm --config-fragment linux_config/leds
+....
+
+But beware that one of the LEDs has a heartbeat trigger by default (specified on dts), so it will produce a lot of output.
+
+And then activate it with:
+
+....
+cd /sys/class/leds/versatile:0
+cat max_brightness
+echo 255 >brightness
+....
+
+Relevant QEMU files:
+
+* `hw/arm/versatilepb.c`
+* `hw/misc/arm_sysctl.c`
+
+Relevant kernel files:
+
+* `arch/arm/boot/dts/versatile-pb.dts`
+* `drivers/leds/led-class.c`
+* `drivers/leds/leds-sysctl.c`
+
+==== platform_device
+
+Minimal platform device example coded into the `-M versatilepb` SoC of our QEMU fork.
+
+Using this device now requires checking out to the branch:
+
+....
+git checkout platform-device
+git submodule sync
+....
+
+before building, it does not work on master.
+
+Rationale: we found out that the kernels that build for `qemu -M versatilepb` don't work on gem5 because `versatilepb` is an old pre-v7 platform, and gem5 requires armv7. So we migrated over to `-M virt` to have a single kernel for both gem5 and QEMU, and broke this since the single kernel was more important. TODO port to `-M virt`.
+
+The module itself can be found at: https://github.com/cirosantilli/linux-kernel-module-cheat/blob/platform-device/kernel_modules/platform_device.c
+
+Uses:
+
+* `hw/misc/lkmc_platform_device.c` minimal device added in our QEMU fork to `-M versatilepb`
+* the device tree entry we added to our Linux kernel fork: https://github.com/cirosantilli/linux/blob/361bb623671a52a36a077a6dd45843389a687a33/arch/arm/boot/dts/versatile-pb.dts#L42
+
+Expected outcome after insmod:
+
+* QEMU reports MMIO with printfs
+* IRQs are generated and handled by this module, which logs to dmesg
+
+Without insmoding this module, try writing to the register with <<dev-mem>>:
+
+....
+devmem 0x101e9000 w 0x12345678
+....
+
+We can also observe the interrupt with <<dummy-irq>>:
+
+....
+modprobe dummy-irq irq=34
+insmod platform_device.ko
+....
+
+The IRQ number `34` was found by on the dmesg after:
+
+....
+insmod platform_device.ko
+....
+
+Bibliography: https://stackoverflow.com/questions/28315265/how-to-add-a-new-device-in-qemu-source-code/44612957#44612957
+
+==== gem5 educational hardware models
+
+TODO get some working!
+
+http://gedare-csphd.blogspot.co.uk/2013/02/adding-simple-io-device-to-gem5.html
+
+=== QEMU monitor
+
+The QEMU monitor is a magic terminal that allows you to send text commands to the QEMU VM itself: https://en.wikibooks.org/wiki/QEMU/Monitor
+
+While QEMU is running, on another terminal, run:
+
+....
+./qemu-monitor
+....
+
+or send one command such as `info qtree` and quit the monitor:
+
+....
+./qemu-monitor info qtree
+....
+
+or equivalently:
+
+....
+echo 'info qtree' | ./qemu-monitor
+....
+
+Source: link:qemu-monitor[]
+
+`qemu-monitor` uses the `-monitor` QEMU command line option, which makes the monitor listen from a socket.
+
+Alternatively, we can also enter the QEMU monitor from inside `-nographics` <<qemu-text-mode>> with:
+
+....
+Ctrl-A C
+....
+
+and go back to the terminal with:
+
+....
+Ctrl-A C
+....
+
+* https://stackoverflow.com/questions/14165158/how-to-switch-to-qemu-monitor-console-when-running-with-curses
+* https://superuser.com/questions/488263/how-to-switch-to-the-qemu-control-panel-with-nographics
+
+When in graphic mode, we can do it from the GUI:
+
+....
+Ctrl-Alt ?
+....
+
+where `?` is a digit `1`, or `2`, or, `3`, etc. depending on what else is available on the GUI: serial, parallel and frame buffer.
+
+Finally, we can also access QEMU monitor commands directly from <<gdb>> with the `monitor` command:
+
+....
+./run-gdb
+....
+
+then inside that shell:
+
+....
+monitor info qtree
+....
+
+This way you can use both QEMU monitor and GDB commands to inspect the guest from inside a single shell! Pretty awesome.
+
+In general, `./qemu-monitor` is the best option, as it:
+
+* works on both modes
+* allows to use the host Bash history to re-run one off commands
+* allows you to search the output of commands on your host shell even when in graphic mode
+
+Getting everything to work required careful choice of QEMU command line options:
+
+* https://stackoverflow.com/questions/49716931/how-to-run-qemu-with-nographic-and-monitor-but-still-be-able-to-send-ctrlc-to/49751144#49751144
+* https://unix.stackexchange.com/questions/167165/how-to-pass-ctrl-c-to-the-guest-when-running-qemu-with-nographic/436321#436321
+
+==== QEMU monitor from guest
+
+Peter Maydell said potentially not possible nicely as of August 2018: https://stackoverflow.com/questions/51747744/how-to-run-a-qemu-monitor-command-from-inside-the-guest/51764110#51764110
+
+It is also worth looking into the QEMU Guest Agent tool `qemu-gq` that can be enabled with:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_QEMU=y'
+....
+
+See also: https://superuser.com/questions/930588/how-to-pass-commands-noninteractively-to-running-qemu-from-the-guest-qmp-via-te
+
+==== QEMU monitor from GDB
+
+When doing <<gdb>> it is possible to send QEMU monitor commands through the GDB `monitor` command, which saves you the trouble of opening yet another shell.
+
+Try for example:
+
+....
+monitor help
+monitor info qtree
+....
+
+=== Debug the emulator
+
+When you start hacking QEMU or gem5, it is useful to see what is going on inside the emulator themselves.
+
+This is of course trivial since they are just regular userland programs on the host, but we make it a bit easier with:
+
+....
+./run --debug-vm
+....
+
+Then you could:
+
+....
+break edu_mmio_read
+run
+....
+
+And in QEMU:
+
+....
+./qemu_edu.sh
+....
+
+Or for a faster development loop:
+
+....
+./run --debug-vm-args '-ex "break edu_mmio_read" -ex "run"'
+....
+
+When in <<qemu-text-mode>>, using `--debug-vm` makes Ctrl-C not get passed to the QEMU guest anymore: it is instead captured by GDB itself, so allow breaking. So e.g. you won't be able to easily quit from a guest program like:
+
+....
+sleep 10
+....
+
+In graphic mode, make sure that you never click inside the QEMU graphic while debugging, otherwise you mouse gets captured forever, and the only solution I can find is to go to a TTY with `Ctrl-Alt-F1` and `kill` QEMU.
+
+You can still send key presses to QEMU however even without the mouse capture, just either click on the title bar, or alt tab to give it focus.
+
+==== Debug gem5 Python scripts
+
+Start pdb at the first instruction:
+
+....
+./run --emulator gem5 --gem5-exe-args='--pdb' --terminal
+....
+
+Requires `--terminal` as we must be on foreground.
+
+Alternatively, you can add to the point of the code where you want to break the usual:
+
+....
+import ipdb; ipdb.set_trace()
+....
+
+and then run with:
+
+....
+./run --emulator gem5 --terminal
+....
+
+TODO test PyCharm: https://stackoverflow.com/questions/51982735/writing-gem5-configuration-scripts-with-pycharm
+
+=== Tracing
+
+QEMU can log several different events.
+
+The most interesting are events which show instructions that QEMU ran, for which we have a helper:
+
+....
+./trace-boot --arch x86_64
+....
+
+Under the hood, this uses QEMU's `-trace` option.
+
+You can then inspect the address of each instruction run:
+
+....
+less "$(./getvar --arch x86_64 run_dir)/trace.txt"
+....
+
+Sample output excerpt:
+
+....
+exec_tb 0.000 pid=10692 tb=0x7fb4f8000040 pc=0xfffffff0
+exec_tb 35.391 pid=10692 tb=0x7fb4f8000180 pc=0xfe05b
+exec_tb 21.047 pid=10692 tb=0x7fb4f8000340 pc=0xfe066
+exec_tb 12.197 pid=10692 tb=0x7fb4f8000480 pc=0xfe06a
+....
+
+Get the list of available trace events:
+
+....
+./run --trace help
+....
+
+TODO: any way to show the actualy disassembled instruction executed directly from there? Possible with <<qemu-d-tracing>>.
+
+Enable other specific trace events:
+
+....
+./run --trace trace1,trace2
+./qemu-trace2txt -a "$arch"
+less "$(./getvar -a "$arch" run_dir)/trace.txt"
+....
+
+This functionality relies on the following setup:
+
+* `./configure --enable-trace-backends=simple`. This logs in a binary format to the trace file.
++
+It makes 3x execution faster than the default trace backend which logs human readable data to stdout.
++
+Logging with the default backend `log` greatly slows down the CPU, and in particular leads to this boot message:
++
+....
+All QSes seen, last rcu_sched kthread activity 5252 (4294901421-4294896169), jiffies_till_next_fqs=1, root ->qsmask 0x0
+swapper/0       R  running task        0     1      0 0x00000008
+ ffff880007c03ef8 ffffffff8107aa5d ffff880007c16b40 ffffffff81a3b100
+ ffff880007c03f60 ffffffff810a41d1 0000000000000000 0000000007c03f20
+ fffffffffffffedc 0000000000000004 fffffffffffffedc ffffffff00000000
+Call Trace:
+ <IRQ>  [<ffffffff8107aa5d>] sched_show_task+0xcd/0x130
+ [<ffffffff810a41d1>] rcu_check_callbacks+0x871/0x880
+ [<ffffffff810a799f>] update_process_times+0x2f/0x60
+....
++
+in which the boot appears to hang for a considerable time.
+* patch  QEMU source to remove the `disable` from `exec_tb` in the `trace-events` file. See also: https://rwmj.wordpress.com/2016/03/17/tracing-qemu-guest-execution/
+
+==== QEMU -d tracing
+
+QEMU also has a second trace mechanism in addition to `-trace`, find out the events with:
+
+....
+./run -- -d help
+....
+
+Let's pick the one that dumps executed instructions, `in_asm`:
+
+....
+./run --eval './linux/poweroff.out' -- -D out/trace.txt -d in_asm
+less out/trace.txt
+....
+
+Sample output excerpt:
+
+....
+----------------
+IN:
+0xfffffff0:  ea 5b e0 00 f0           ljmpw    $0xf000:$0xe05b
+
+----------------
+IN:
+0x000fe05b:  2e 66 83 3e 88 61 00     cmpl     $0, %cs:0x6188
+0x000fe062:  0f 85 7b f0              jne      0xd0e1
+....
+
+TODO: after `IN:`, symbol names are meant to show, which is awesome, but I don't get any. I do see them however when running a bare metal example from: https://github.com/cirosantilli/newlib-examples/tree/900a9725947b1f375323c7da54f69e8049158881
+
+TODO: what is the point of having two mechanisms, `-trace` and `-d`? `-d` tracing is cool because it does not require a messy recompile, and it can also show symbols.
+
+==== QEMU trace register values
+
+TODO: is it possible to show the register values for each instruction?
+
+This would include the memory values read into the registers.
+
+Asked at: https://superuser.com/questions/1377764/how-to-trace-the-register-values-of-executed-instructions-in-qemu
+
+Seems impossible due to optimizations that QEMU does:
+
+* https://lists.gnu.org/archive/html/qemu-devel/2015-06/msg07479.html
+* https://lists.gnu.org/archive/html/qemu-devel/2014-04/msg02856.html
+* https://lists.gnu.org/archive/html/qemu-devel/2012-08/msg03057.html
+
+PANDA can list memory addresses, so I bet it can also decode the instructions: https://github.com/panda-re/panda/blob/883c85fa35f35e84a323ed3d464ff40030f06bd6/panda/docs/LINE_Censorship.md I wonder why they don't just upstream those things to QEMU's tracing: https://github.com/panda-re/panda/issues/290
+
+gem5 can do it as shown at: xref:gem5-tracing[xrefstyle=full].
+
+==== Trace source lines
+
+We can further use Binutils' `addr2line` to get the line that corresponds to each address:
+
+....
+./trace-boot --arch x86_64
+./trace2line --arch x86_64
+less "$(./getvar --arch x86_64 run_dir)/trace-lines.txt"
+....
+
+The last commands takes several seconds.
+
+The format is as follows:
+
+....
+39368 _static_cpu_has arch/x86/include/asm/cpufeature.h:148
+....
+
+Where:
+
+* `39368`: number of consecutive times that a line ran. Makes the output much shorter and more meaningful
+* `_static_cpu_has`: name of the function that contains the line
+* `arch/x86/include/asm/cpufeature.h:148`: file and line
+
+This could of course all be done with GDB, but it would likely be too slow to be practical.
+
+TODO do even more awesome offline post-mortem analysis things, such as:
+
+* detect if we are in userspace or kernelspace. Should be a simple matter of reading the
+* read kernel data structures, and determine the current thread. Maybe we can reuse / extend the kernel's GDB Python scripts??
+
+==== QEMU record and replay
+
+QEMU runs, unlike gem5, are not deterministic by default, however it does support a record and replay mechanism that allows you to replay a previous run deterministically.
+
+This awesome feature allows you to examine a single run as many times as you would like until you understand everything:
+
+....
+# Record a run.
+./run --eval-after './linux/rand_check.out;./linux/poweroff.out;' --record
+# Replay the run.
+./run --eval-after './linux/rand_check.out;./linux/poweroff.out;' --replay
+....
+
+A convenient shortcut to do both at once to test the feature is:
+
+....
+./qemu-rr --eval-after './linux/rand_check.out;./linux/poweroff.out;'
+....
+
+By comparing the terminal output of both runs, we can see that they are the exact same, including things which normally differ across runs:
+
+* timestamps of dmesg output
+* <<rand_check-out>> output
+
+The record and replay feature was revived around QEMU v3.0.0. It existed earlier but it rot completely. As of v3.0.0 it is still flaky: sometimes we get deadlocks, and only a limited number of command line arguments are supported.
+
+Documented at: https://github.com/qemu/qemu/blob/v2.12.0/docs/replay.txt
+
+TODO: using `-r` as above leads to a kernel warning:
+
+....
+rcu_sched detected stalls on CPUs/tasks
+....
+
+TODO: replay deadlocks intermittently at disk operations, last kernel message:
+
+....
+EXT4-fs (sda): re-mounted. Opts: block_validity,barrier,user_xattr
+....
+
+TODO replay with network gets stuck:
+
+....
+./qemu-rr --eval-after 'ifup -a;wget -S google.com;./linux/poweroff.out;'
+....
+
+after the message:
+
+....
+adding dns 10.0.2.3
+....
+
+There is explicit network support on the QEMU patches, but either it is buggy or we are not using the correct magic options.
+
+Solved on unmerged c42634d8e3428cfa60672c3ba89cabefc720cde9 from https://github.com/ispras/qemu/tree/rr-180725
+
+TODO `arm` and `aarch64` only seem to work with initrd since I cannot plug a working IDE disk device? See also: https://lists.gnu.org/archive/html/qemu-devel/2018-02/msg05245.html
+
+Then, when I tried with <<initrd>> and no disk:
+
+....
+./build-buildroot --arch aarch64 --initrd
+./qemu-rr --arch aarch64 --eval-after './linux/rand_check.out;./linux/poweroff.out;' --initrd
+....
+
+QEMU crashes with:
+
+....
+ERROR:replay/replay-time.c:49:replay_read_clock: assertion failed: (replay_file && replay_mutex_locked())
+....
+
+I had the same error previously on x86-64, but it was fixed: https://bugs.launchpad.net/qemu/+bug/1762179 so maybe the forgot to fix it for `aarch64`?
+
+Solved on unmerged c42634d8e3428cfa60672c3ba89cabefc720cde9 from https://github.com/ispras/qemu/tree/rr-180725
+
+===== QEMU reverse debugging
+
+TODO get working.
+
+QEMU replays support checkpointing, and this allows for a simplistic "reverse debugging" implementation proposed at https://lists.gnu.org/archive/html/qemu-devel/2018-06/msg00478.html on the unmerged https://github.com/ispras/qemu/tree/rr-180725[]:
+
+....
+./run --eval-after './linux/rand_check.out;./linux/poweroff.out;' --record
+./run --eval-after './linux/rand_check.out;./linux/poweroff.out;' --replay --gdb-wait
+....
+
+On another shell:
+
+....
+./run-gdb start_kernel
+....
+
+In GDB:
+
+....
+n
+n
+n
+n
+reverse-continue
+....
+
+and we are back at `start_kernel`
+
+==== QEMU trace multicore
+
+TODO: is there any way to distinguish which instruction runs on each core? Doing:
+
+....
+./run --arch x86_64 --cpus 2 --eval './linux/poweroff.out' --trace exec_tb
+./qemu-trace2txt
+....
+
+just appears to output both cores intertwined without any clear differentiation.
+
+==== gem5 tracing
+
+gem5 provides also provides a tracing mechanism documented at: http://www.gem5.org/Trace_Based_Debugging[]:
+
+....
+./run --arch aarch64 --eval 'm5 exit' --emulator gem5 --trace ExecAll
+less "$(./getvar --arch aarch64 run_dir)/trace.txt"
+....
+
+Keep in mind however that the disassembly is very broken in several places as of 2019q2, so you can't always trust it.
+
+Output the trace to stdout instead of a file:
+
+....
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --eval 'm5 exit' \
+  --trace ExecAll \
+  --trace-stdout \
+;
+....
+
+We also have a shortcut for `--trace ExecAll -trace-stdout` with `--trace-insts-stdout`
+
+....
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --eval 'm5 exit' \
+  --trace-insts-stdout \
+;
+....
+
+This would produce a lot of output however, so you will likely not want that when tracing a Linux kernel boot instructions. But it can be very convenient for smaller traces such as <<baremetal>>.
+
+List all available debug flags:
+
+....
+./run --arch aarch64 --gem5-exe-args='--debug-help' --emulator gem5
+....
+
+but to understand most of them you have to look at the source code:
+
+....
+less "$(./getvar gem5_source_dir)/src/cpu/SConscript"
+less "$(./getvar gem5_source_dir)/src/cpu/exetrace.cc"
+....
+
+The most important trace flags to know about are:
+
+* <<gem5-execall-trace-format,`ExecAll`>>
+* `Faults`: CPU exceptions / interrupts, see an example at: <<arm-svc-instruction>>
+* <<gem5-registers-trace-format,`Registers`>>
+
+The traces are generated from `DPRINTF(<trace-id>` calls scattered throughout the code.
+
+As can be seen on the `Sconstruct`, `Exec` is just an alias that enables a set of flags.
+
+Be warned, the trace is humongous, at 16Gb.
+
+We can make the trace smaller by naming the trace file as `trace.txt.gz`, which enables GZIP compression, but that is not currently exposed on our scripts, since you usually just need something human readable to work on.
+
+Enabling tracing made the runtime about 4x slower on the <<p51>>, with or without `.gz` compression.
+
+Trace the source lines just like <<trace-source-lines,for QEMU>> with:
+
+....
+./trace-boot --arch aarch64 --emulator gem5
+./trace2line --arch aarch64 --emulator gem5
+less "$(./getvar --arch aarch64 run_dir)/trace-lines.txt"
+....
+
+TODO: 7452d399290c9c1fc6366cdad129ef442f323564 `./trace2line` this is too slow and takes hours. QEMU's processing of 170k events takes 7 seconds. gem5's processing is analogous, but there are 140M events, so it should take 7000 seconds ~ 2 hours which seems consistent with what I observe, so maybe there is no way to speed this up... The workaround is to just use gem5's `ExecSymbol` to get function granularity, and then GDB individually if line detail is needed?
+
+===== gem5 ExecAll trace format
+
+This debug flag traces all instructions.
+
+The output format is of type:
+
+....
+25007000: system.cpu T0 : @start_kernel    : stp
+25007000: system.cpu T0 : @start_kernel.0  :   addxi_uop   ureg0, sp, #-112 : IntAlu :  D=0xffffff8008913f90
+25007500: system.cpu T0 : @start_kernel.1  :   strxi_uop   x29, [ureg0] : MemWrite :  D=0x0000000000000000 A=0xffffff8008913f90
+25008000: system.cpu T0 : @start_kernel.2  :   strxi_uop   x30, [ureg0, #8] : MemWrite :  D=0x0000000000000000 A=0xffffff8008913f98
+25008500: system.cpu T0 : @start_kernel.3  :   addxi_uop   sp, ureg0, #0 : IntAlu :  D=0xffffff8008913f90
+....
+
+There are two types of lines:
+
+* full instructions, as the first line. Only shown if the `ExecMacro` flag is given.
+* micro ops that constitute the instruction, the lines that follow. Yes, `aarch64` also has microops: https://superuser.com/questions/934752/do-arm-processors-like-cortex-a9-use-microcode/934755#934755[]. Only shown if the `ExecMicro` flag is given.
+
+Breakdown:
+
+* `25007500`: time count in some unit. Note how the microops execute at further timestamps.
+* `system.cpu`: distinguishes between CPUs when there are more than one. For example, running xref:arm-multicore[xrefstyle=full] with two cores produces `system.cpu0` and `system.cpu1`
+* `T0`: thread number. TODO: https://superuser.com/questions/133082/hyper-threading-and-dual-core-whats-the-difference/995858#995858[hyperthread]? How to play with it?
++
+`config`.ini has `--param 'system.multi_thread = True' --param 'system.cpu[0].numThreads = 2'`, but in <<arm-multicore>> the first one alone does not produce `T1`, and with the second one simulation blows up with:
++
+....
+fatal: fatal condition interrupts.size() != numThreads occurred: CPU system.cpu has 1 interrupt controllers, but is expecting one per thread (2)
+....
+* `@start_kernel`: we are in the `start_kernel` function. Awesome feature! Implemented with libelf https://sourceforge.net/projects/elftoolchain/ copy pasted in-tree `ext/libelf`. To get raw addresses, remove the `ExecSymbol`, which is enabled by `Exec`. This can be done with `Exec,-ExecSymbol`.
+* `.1` as in `@start_kernel.1`: index of the microop
+* `stp`: instruction disassembly. Note however that the disassembly of many instructions are very broken as of 2019q2, and you can't just trust them blindly.
+* `strxi_uop   x29, [ureg0]`: microop disassembly.
+* `MemWrite :  D=0x0000000000000000 A=0xffffff8008913f90`: a memory write microop:
+** `D` stands for data, and represents the value that was written to memory or to a register
+** `A` stands for address, and represents the address to which the value was written. It only shows when data is being written to memory, but not to registers.
+
+The best way to verify all of this is to write some <<baremetal,baremetal code>>
+
+===== gem5 Registers trace format
+
+This flag shows a more detailed register usage than <<gem5-execall-trace-format>>.
+
+For example, if we run in LKMC 0323e81bff1d55b978a4b36b9701570b59b981eb:
+
+....
+./run --arch aarch64 --baremetal userland/arch/aarch64/add.S --emulator gem5 --trace ExecAll,Registers --trace-stdout
+....
+
+then the stdout contains:
+
+....
+  31000: system.cpu A0 T0 : @main_after_prologue    :   movz   x0, #1, #0        : IntAlu :  D=0x0000000000000001  flags=(IsInteger)
+  31500: system.cpu.[tid:0]: Setting int reg 34 (34) to 0.
+  31500: system.cpu.[tid:0]: Reading int reg 0 (0) as 0x1.
+  31500: system.cpu.[tid:0]: Setting int reg 1 (1) to 0x3.
+  31500: system.cpu A0 T0 : @main_after_prologue+4    :   add   x1, x0, #2         : IntAlu :  D=0x0000000000000003  flags=(IsInteger)
+  32000: system.cpu.[tid:0]: Setting int reg 34 (34) to 0.
+  32000: system.cpu.[tid:0]: Reading int reg 1 (1) as 0x3.
+  32000: system.cpu.[tid:0]: Reading int reg 31 (34) as 0.
+  32000: system.cpu.[tid:0]: Setting int reg 0 (0) to 0x3.
+....
+
+which corresponds to the two following instructions:
+
+....
+mov x0, 1
+add x1, x0, 2
+....
+
+TODO that format is either buggy or is very difficult to understand:
+
+* what is `34`? Presumably some flags register?
+* what do the numbers in parenthesis mean at `31 (34)`? Presumably some flags register?
+* why is the first instruction setting `reg 1` and the second one `reg 0`, given that the first sets `x0` and the second `x1`?
+
+===== gem5 TARMAC traces
+
+https://stackoverflow.com/questions/54882466/how-to-use-the-tarmac-tracer-with-gem5
+
+===== gem5 tracing internals
+
+As of gem5 16eeee5356585441a49d05c78abc328ef09f7ace the default tracer is `ExeTracer`. It is set at:
+
+....
+src/cpu/BaseCPU.py:63:default_tracer = ExeTracer()
+....
+
+which then gets used at:
+
+....
+class BaseCPU(ClockedObject):
+    [...]
+    tracer = Param.InstTracer(default_tracer, "Instruction tracer")
+....
+
+All tracers derive from the common `InstTracer` base class:
+
+....
+git grep ': InstTracer'
+....
+
+gives:
+
+....
+src/arch/arm/tracers/tarmac_parser.hh:218:    TarmacParser(const Params *p) : InstTracer(p), startPc(p->start_pc),
+src/arch/arm/tracers/tarmac_tracer.cc:57:  : InstTracer(p),
+src/cpu/exetrace.hh:67:    ExeTracer(const Params *params) : InstTracer(params)
+src/cpu/inst_pb_trace.cc:72:    : InstTracer(p), buf(nullptr), bufSize(0), curMsg(nullptr)
+src/cpu/inteltrace.hh:63:    IntelTrace(const IntelTraceParams *p) : InstTracer(p)
+....
+
+As mentioned at <<gem5-tarmac-traces>>, there appears to be no way to select those currently without hacking the config scripts.
+
+TARMAC is described at: <<gem5-tarmac-traces>>.
+
+TODO: are `IntelTrace` and `TarmacParser` useful for anything or just relics?
+
+Then there is also the `NativeTrace` class:
+
+....
+src/cpu/nativetrace.hh:68:class NativeTrace : public ExeTracer
+....
+
+which gets implemented in a few different ISAs, but not all:
+
+....
+src/arch/arm/nativetrace.hh:40:class ArmNativeTrace : public NativeTrace
+src/arch/sparc/nativetrace.hh:41:class SparcNativeTrace : public NativeTrace
+src/arch/x86/nativetrace.hh:41:class X86NativeTrace : public NativeTrace
+....
+
+TODO: I can't find any usages of those classes from in-tree configs.
+
+=== QEMU GUI is unresponsive
+
+Sometimes in Ubuntu 14.04, after the QEMU SDL GUI starts, it does not get updated after keyboard strokes, and there are artifacts like disappearing text.
+
+We have not managed to track this problem down yet, but the following workaround always works:
+
+....
+Ctrl-Shift-U
+Ctrl-C
+root
+....
+
+This started happening when we switched to building QEMU through Buildroot, and has not been observed on later Ubuntu.
+
+Using text mode is another workaround if you don't need GUI features.
+

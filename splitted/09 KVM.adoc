@@ -1,0 +1,68 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== KVM
+
+https://en.wikipedia.org/wiki/Kernel-based_Virtual_Machine[KVM] is Linux kernel interface that <<benchmark-linux-kernel-boot,greatly speeds up>> execution of virtual machines.
+
+You can make QEMU or gem5  by passing enabling KVM with:
+
+....
+./run --kvm
+....
+
+but it was broken in gem5 with pending patches: https://www.mail-archive.com/gem5-users@gem5.org/msg15046.html It fails immediately on:
+
+....
+panic: KVM: Failed to enter virtualized mode (hw reason: 0x80000021)
+....
+
+KVM works by running userland instructions natively directly on the real hardware instead of running a software simulation of those instructions.
+
+Therefore, KVM only works if you the host architecture is the same as the guest architecture. This means that this will likely only work for x86 guests since almost all development machines are x86 nowadays. Unless you are https://www.youtube.com/watch?v=8ItXpmLsINs[running an ARM desktop for some weird reason] :-)
+
+We don't enable KVM by default because:
+
+* it limits visibility, since more things are running natively:
+** can't use <<gdb,GDB>>
+** can't do <<tracing,instruction tracing>>
+** on gem5, you lose <<gem5-run-benchmark,cycle counts>> and therefor any notion of performance
+* QEMU kernel boots are already <<benchmark-linux-kernel-boot,fast enough>> for most purposes without it
+
+One important use case for KVM is to fast forward gem5 execution, often to skip boot, take a <<gem5-checkpoint>>, and then move on to a more detailed and slow simulation
+
+=== KVM arm
+
+TODO: we haven't gotten it to work yet, but it should be doable, and this is an outline of how to do it. Just don't expect this to tested very often for now.
+
+We can test KVM on arm by running this repository inside an Ubuntu arm QEMU VM.
+
+This produces no speedup of course, since the VM is already slow since it cannot use KVM on the x86 host.
+
+First, obtain an Ubuntu arm64 virtual machine as explained at: https://askubuntu.com/questions/281763/is-there-any-prebuilt-qemu-ubuntu-image32bit-online/1081171#1081171
+
+Then, from inside that image:
+
+....
+sudo apt-get install git
+git clone https://github.com/cirosantilli/linux-kernel-module-cheat
+cd linux-kernel-module-cheat
+sudo ./setup -y
+....
+
+and then proceed exactly as in <<prebuilt>>.
+
+We don't want to build the full Buildroot image inside the VM as that would be way too slow, thus the recommendation for the prebuilt setup.
+
+TODO: do the right thing and cross compile QEMU and gem5. gem5's Python parts might be a pain. QEMU should be easy: https://stackoverflow.com/questions/26514252/cross-compile-qemu-for-arm
+

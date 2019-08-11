@@ -1,0 +1,651 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Userland assembly
+
+Programs under `userland/arch/<arch>/` are examples of userland assembly programming.
+
+This section will document ISA agnostic concepts, and you should read it first.
+
+ISA specifics are covered at:
+
+* <<x86-userland-assembly>> under link:userland/arch/x86_64/[], originally migrated from: https://github.com/cirosantilli/x86-assembly-cheat
+* <<arm-userland-assembly>> originally migrated from https://github.com/cirosantilli/arm-assembly-cheat under:
+** link:userland/arch/arm/[]
+** link:userland/arch/aarch64/[]
+
+Like other userland programs, these programs can be run as explained at: xref:userland-setup[xrefstyle=full].
+
+As a quick reminder, the fastest setups to get started are:
+
+* <<userland-setup-getting-started-natively>> if your host can run the examples, e.g. x86 example on an x86 host:
+* <<userland-setup-getting-started-with-prebuilt-toolchain-and-qemu-user-mode>> otherwise
+
+However, as usual, it is saner to build your toolchain as explained at: xref:qemu-user-mode-getting-started[xrefstyle=full].
+
+The first examples you should look into are:
+
+* add
+** link:userland/arch/x86_64/add.S[]
+** link:userland/arch/arm/add.S[]
+** link:userland/arch/aarch64/add.S[]
+* mov between register and memory
+** link:userland/arch/x86_64/mov.S[]
+** <<arm-mov-instruction>>
+** <<arm-load-and-store-instructions>>
+* addressing modes
+** <<x86-addressing-modes>>
+** <<arm-addressing-modes>>
+* registers, see: xref:assembly-registers[xrefstyle=full]
+* jumping:
+** <<x86-control-transfer-instructions>>
+** <<arm-branch-instructions>>
+* SIMD
+** <<x86-simd>>
+** <<arm-simd>>
+
+The add examples in particular:
+
+* introduce the basics of how a given assembly works: how many inputs / outputs, who is input and output, can it use memory or just registers, etc.
++
+It is then a big copy paste for most other data instructions.
+* verify that the venerable ADD instruction and our assertions are working
+
+Now try to modify modify the x86_64 add program to see the assertion fail:
+
+....
+LKMC_ASSERT_EQ(%rax, $4)
+....
+
+because 1 + 2 tends to equal 3 instead of 4.
+
+And then watch the assertion fail:
+
+....
+./build-userland
+./run --userland userland/arch/x86_64/add.S
+....
+
+with error message:
+
+....
+assert_eq_64 failed
+val1 0x3
+val2 0x4
+error: asm_main returned 1 at line 8
+....
+
+and notice how the error message gives both:
+
+* the actual assembly source line number where the failing assert was
+* the actual and expected values
+
+Other infrastructure sanity checks that you might want to look into include:
+
+* link:userland/arch/empty.S[]
+* `LKMC_FAIL` tests
+** link:userland/arch/lkmc_assert_fail.S[]
+* `LKMC_ASSERT_EQ` tests
+** link:userland/arch/x86_64/lkmc_assert_eq_fail.S[]
+** link:userland/arch/arm/lkmc_assert_eq_fail.S[]
+** link:userland/arch/aarch64/lkmc_assert_eq_fail.S[]
+* `LKMC_ASSERT_MEMCMP` tests
+** link:userland/arch/x86_64/lkmc_assert_memcmp_fail.S[]
+** link:userland/arch/arm/lkmc_assert_memcmp_fail.S[]
+** link:userland/arch/aarch64/lkmc_assert_memcmp_fail.S[]
+
+=== Assembly registers
+
+After seeing an <<userland-assembly,ADD hello world>>, you need to learn the general registers:
+
+* x86, see: xref:x86-registers[xrefstyle=full]
+* arm
+** link:userland/arch/arm/registers.S[]
+* aarch64
+** link:userland/arch/aarch64/registers.S[]
+** link:userland/arch/aarch64/pc.S[]
+
+Bibliography: <<armarm7>> A2.3 "ARM core registers".
+
+==== ARMv8 aarch64 x31 register
+
+Example: link:userland/arch/aarch64/x31.S[]
+
+There is no X31 name, and the encoding can have two different names depending on the instruction:
+
+* XZR: zero register:
+** https://stackoverflow.com/questions/42788696/why-might-one-use-the-xzr-register-instead-of-the-literal-0-on-armv8
+** https://community.arm.com/processors/f/discussions/3185/wzr-xzr-register-s-purpose
+* SP: stack pointer
+
+To make things more confusing, some aliases can take either name, which makes them alias to different things, e.g. MOV accepts both:
+
+....
+mov x0, sp
+mov x0, xzr
+....
+
+and the first one is an alias to ADD while the second an alias to <<arm-bitwise-instructions,ORR>>.
+
+The difference is documented on a per instruction basis. Instructions that encode 31 as SP say:
+
+....
+if d == 31 then
+  SP[] = result;
+else
+  X[d] = result;
+....
+
+And then those that don't say that, B1.2.1 "Registers in AArch64 state" implies the zero register:
+
+____
+In instruction encodings, the value 0b11111 (31) is used to indicate the ZR (zero register). This
+indicates that the argument takes the value zero, but does not indicate that the ZR is implemented
+as a physical register.
+____
+
+This is also described on <<armarm8>> C1.2.5 "Register names":
+
+____
+There is no register named W31 or X31.
+
+The name SP represents the stack pointer for 64-bit operands where an encoding of the value 31 in the
+corresponding register field is interpreted as a read or write of the current stack pointer. When instructions
+do not interpret this operand encoding as the stack pointer, use of the name SP is an error.
+
+The name XZR represents the zero register for 64-bit operands where an encoding of the value 31 in the
+corresponding register field is interpreted as returning zero when read or discarding the result when written.
+When instructions do not interpret this operand encoding as the zero register, use of the name XZR is an error
+____
+
+=== Floating point assembly
+
+Keep in mind that many ISAs started floating point as an optional thing, and it later got better integrated into the main CPU, side by side with SIMD.
+
+For this reason, there are sometimes multiple ways to do floating point operations in each ISA.
+
+Let's start as usual with floating point addition + register file:
+
+* arm
+** <<arm-vadd-instruction>>
+** <<arm-vfp-registers>>
+* aarch64
+** <<armv8-aarch64-fadd-instruction>>
+** <<armv8-aarch64-floating-point-registers>>
+
+=== SIMD assembly
+
+Much like ADD for non-SIMD, start learning SIMD instructions by looking at the integer and floating point SIMD ADD instructions of each ISA:
+
+* x86
+** <<x86-sse-data-transfer-instructions,ADDPD>>
+** <<x86-paddq-instruction>>
+* arm
+** <<arm-vadd-instruction>>
+* aarch64
+** <<armv8-aarch64-add-vector-instruction>>
+** <<armv8-aarch64-fadd-instruction>>
+
+Then it is just a huge copy paste of infinite boring details:
+
+* <<x86-simd>>
+* <<arm-simd>>
+
+To debug these instructoins, you can see the register values in GDB with:
+
+....
+info registers float
+....
+
+or alternatively with register names (here the ARMv8 V0 register):
+
+....
+print $v0
+....
+
+as mentioned at:
+
+* https://stackoverflow.com/questions/5429137/how-to-print-register-values-in-gdb/38036152#38036152
+* https://reverseengineering.stackexchange.com/questions/8992/floating-point-registers-on-arm/20623#20623
+
+Bibliography: https://stackoverflow.com/questions/1389712/getting-started-with-intel-x86-sse-simd-instructions/56409539#56409539
+
+==== FMA instruction
+
+Fused multiply add:
+
+* x86: xref:x86-fma[xrefstyle=full]
+
+Bibliography:
+
+* https://en.wikipedia.org/wiki/Multiply–accumulate_operation
+* https://en.wikipedia.org/wiki/FMA_instruction_set
+
+Particularly important numerical analysis instruction, that is used in particular for;
+
+* Dot product
+* Matrix multiplication
+
+FMA is so important that <<ieee-754>> specifies it with single precision drop compared to a separate add and multiply!
+
+Micro-op fun: https://stackoverflow.com/questions/28630864/how-is-fma-implemented
+
+Historically, FMA instructions have been added relatively late to instruction sets.
+
+=== User vs system assembly
+
+By "userland assembly", we mean "the parts of the ISA which can be freely used from userland".
+
+Most ISAs are divided into a system and userland part, and to running the system part requires elevated privileges such as <<ring0>> in x86.
+
+One big difference between both is that we can run userland assembly on <<userland-setup>>, which is easier to get running and debug.
+
+In particular, most userland assembly examples link to the C standard library, see: xref:userland-assembly-c-standard-library[xrefstyle=full].
+
+Userland assembly is generally simpler, and a pre-requisite for <<baremetal-setup>>.
+
+System-land assembly cheats will be put under: xref:baremetal-setup[xrefstyle=full].
+
+=== Userland assembly C standard library
+
+All examples except the <<freestanding-programs>> link to the C standard library.
+
+This allows using the C standard library for IO, which is very convenient and portable across host OSes.
+
+It also exposes other non-IO functionality that is very convenient such as `memcmp`.
+
+The C standard library infrastructure is implemented in the common userland / baremetal source files:
+
+* link:lkmc.c[]
+* link:lkmc.h[]
+* link:lkmc/aarch64.h[]
+* link:lkmc/arm.h[]
+* link:lkmc/x86_64.h[]
+
+==== Freestanding programs
+
+Unlike most our other assembly examples, which use the C standard library for portability, examples under `freestanding/` directories don't link to the C standard library.
+
+As a result, those examples cannot do IO portably, and so they make raw system calls and only be run on one given OS, e.g. <<linux-system-calls>>.
+
+Such executables are called freestanding because they don't execute the glibc initialization code, but rather start directly on our custom hand written assembly.
+
+In order to GDB step debug those executables, you will want to use `--no-continue`, e.g.:
+
+....
+./run --arch aarch64 --userland userland/arch/aarch64/freestanding/linux/hello.S --gdb-wait
+./run-gdb --arch aarch64 --no-continue --userland userland/arch/aarch64/freestanding/linux/hello.S
+....
+
+You are now left on the very first instruction of our tiny executable!
+
+=== GCC inline assembly
+
+Examples under `arch/<arch>/c/` directories show to how use inline assembly from higher level languages such as C:
+
+* x86_64
+** link:userland/arch/x86_64/inline_asm/inc.c[]
+** link:userland/arch/x86_64/inline_asm/add.c[]
+** link:userland/arch/x86_64/inline_asm/sqrt_x87.c[] Shows how to use the <<x86-x87-fpu-instructions>> from inline assembly. Bibliography: https://stackoverflow.com/questions/6514537/how-do-i-specify-immediate-floating-point-numbers-with-inline-assembly/52906126#52906126
+* arm
+** link:userland/arch/arm/inline_asm/inc.c[]
+** link:userland/arch/arm/inline_asm/inc_memory.c[]
+** link:userland/arch/arm/inline_asm/inc_memory_global.c[]
+** link:userland/arch/arm/inline_asm/add.c[]
+* aarch64
+** link:userland/arch/aarch64/inline_asm/earlyclobber.c[]
+** link:userland/arch/aarch64/inline_asm/inc.c[]
+** link:userland/arch/aarch64/inline_asm/multiline.cpp[]
+
+==== GCC inline assembly register variables
+
+Used notably in some of the <<linux-system-calls>> setups:
+
+* link:userland/arch/arm/inline_asm/reg_var.c[]
+* link:userland/arch/aarch64/inline_asm/reg_var.c[]
+* link:userland/arch/aarch64/inline_asm/reg_var_float.c[]
+
+In x86, makes it possible to access variables not exposed with the one letter register constraints.
+
+In arm, it is the only way to achieve this effect: https://stackoverflow.com/questions/10831792/how-to-use-specific-register-in-arm-inline-assembler
+
+This feature notably useful for making system calls from C, see: xref:linux-system-calls[xrefstyle=full].
+
+Documentation: https://gcc.gnu.org/onlinedocs/gcc-4.4.2/gcc/Explicit-Reg-Vars.html
+
+==== GCC inline assembly scratch registers
+
+How to use temporary registers in inline assembly:
+
+* x86_64
+** link:userland/arch/x86_64/inline_asm/scratch.c[]
+** link:userland/arch/x86_64/inline_asm/scratch_hardcode.c[]
+
+Bibliography: https://stackoverflow.com/questions/6682733/gcc-prohibit-use-of-some-registers/54963829#54963829
+
+==== GCC inline assembly early-clobbers
+
+An example of using the `&` early-clobber modifier: link:userland/arch/aarch64/earlyclobber.c
+
+More details at: https://stackoverflow.com/questions/15819794/when-to-use-earlyclobber-constraint-in-extended-gcc-inline-assembly/54853663#54853663
+
+The assertion may fail without it. It actually does fail in GCC 8.2.0.
+
+==== GCC inline assembly floating point ARM
+
+Not documented as of GCC 8.2, but possible: https://stackoverflow.com/questions/53960240/armv8-floating-point-output-inline-assembly
+
+* link:userland/arch/arm/inline_asm/inc_float.c[]
+* link:userland/arch/aarch64/inline_asm/inc_float.c[]
+
+==== GCC intrinsics
+
+Pre-existing C wrappers using inline assembly, this is what production programs should use instead of inline assembly for SIMD:
+
+* x86_64
+** link:userland/arch/x86_64/intrinsics/paddq.c[]. Intrinsics version of link:userland/arch/x86_64/paddq.S[]
+** link:userland/arch/x86_64/intrinsics/addpd.c[]. Intrinsics version of link:userland/arch/x86_64/addpd.S[]
+
+===== GCC x86 intrinsics
+
+Good official cheatsheet with all intrinsics and what they expand to: https://software.intel.com/sites/landingpage/IntrinsicsGuide
+
+The functions use the the following naming convention:
+
+....
+<vector_size>_<intrin_op>_<suffix>
+....
+
+where:
+
+* `<vector_size>`:
+** `mm`: 128-bit vectors (SSE)
+** `mm256`: 256-bit vectors (AVX and AVX2)
+** `mm512`: 512-bit vectors (AVX512)
+* `<intrin_op>`: operation of the intrinsic function, e.g. add, sub, mul, etc.
+* `<suffix>`: data type:
+** `ps`: 4 floats (Packed Single)
+** `pd`: 2 doubles (Packed Double)
+** `ss`: 1 float (Single Single), often the lowest order one
+** `sd`: 1 double (Single Double)
+** `si128`: 128-bits of integers of any size
+** `ep<int_type>` integer types, e.g.:
+*** `epi32`: 32 bit signed integers
+*** `epu16`: 16 bit unsigned integers
+
+Data types:
+
+* `__m128`: four floats
+* `__m128d`: two doubles
+* `__m128i`: integers: 8 x 16-bit, 4 x 32-bit, 2 x 64-bit
+
+The headers to include are clarified at: https://stackoverflow.com/questions/11228855/header-files-for-x86-simd-intrinsics
+
+....
+x86intrin.h everything
+mmintrin.h  MMX
+xmmintrin.h SSE
+emmintrin.h SSE2
+pmmintrin.h SSE3
+tmmintrin.h SSSE3
+smmintrin.h SSE4.1
+nmmintrin.h SSE4.2
+ammintrin.h SSE4A
+wmmintrin.h AES
+immintrin.h AVX
+zmmintrin.h AVX512
+....
+
+Present in `gcc-7_3_0-release` tree at: `gcc/config/i386/x86intrin.h`.
+
+Bibliography:
+
+* https://www.cs.virginia.edu/~cr4bd/3330/S2018/simdref.html
+* https://software.intel.com/en-us/articles/how-to-use-intrinsics
+
+=== Linux system calls
+
+The following <<userland-setup>> programs illustrate how to make system calls:
+
+* x86_64
+** link:userland/arch/x86_64/freestanding/linux/hello.S[]
+** link:userland/arch/x86_64/freestanding/linux/int_system_call.S[]
+** link:userland/arch/x86_64/inline_asm/freestanding/linux/hello.c[]
+** link:userland/arch/x86_64/inline_asm/freestanding/linux/hello_regvar.c[]
+* arm
+** link:userland/arch/arm/freestanding/linux/hello.S[]
+** link:userland/arch/arm/inline_asm/freestanding/linux/hello.c[]
+* aarch64
+** link:userland/arch/aarch64/freestanding/linux/hello.S[]
+** link:userland/arch/aarch64/inline_asm/freestanding/linux/hello.c[]
+** link:userland/arch/aarch64/inline_asm/freestanding/linux/hello_clobbers.c[]
+
+Determining the ARM syscall numbers:
+
+* https://reverseengineering.stackexchange.com/questions/16917/arm64-syscalls-table
+* arm: https://github.com/torvalds/linux/blob/v4.17/arch/arm/tools/syscall.tbl
+* aarch64: https://github.com/torvalds/linux/blob/v4.17/include/uapi/asm-generic/unistd.h
+
+Determining the ARM syscall interface:
+
+* https://stackoverflow.com/questions/12946958/what-is-the-interface-for-arm-system-calls-and-where-is-it-defined-in-the-linux
+* https://stackoverflow.com/questions/45742869/linux-syscall-conventions-for-armv8
+
+Questions about the C inline assembly examples:
+
+* x86_64: https://stackoverflow.com/questions/9506353/how-to-invoke-a-system-call-via-sysenter-in-inline-assembly/54956854#54956854
+* ARM: https://stackoverflow.com/questions/21729497/doing-a-syscall-without-libc-using-arm-inline-assembly
+
+=== Linux calling conventions
+
+A summary of results is shown at: xref:table-linux-calling-conventions[xrefstyle=full].
+
+[[table-linux-calling-conventions]]
+.Summary of Linux calling conventions for several architectures
+[options="header"]
+|===
+|arch |arguments |return value |callee saved registers
+
+|x86_64
+|rdi, rsi, rdx, rcx, r8, r9, xmm0–7
+|rax, rdx
+|rbx, rbp, r12–r15
+
+|arm
+|r0-r3
+|r0-r3
+|r4-r11
+
+|aarch64
+|x0-x7
+|x0-x7
+|x19-x29
+
+|===
+
+==== x86_64 calling convention
+
+Examples:
+
+* link:lkmc/x86_64.h[] `ENTRY` and `EXIT`
+
+One important catch is that the stack must always be aligned to 16-bits before making calls: https://stackoverflow.com/questions/56324948/why-does-calling-the-c-abort-function-from-an-x86-64-assembly-function-lead-to
+
+Bibliography:
+
+* https://en.wikipedia.org/wiki/X86_calling_conventions#System_V_AMD64_ABI
+* https://stackoverflow.com/questions/18024672/what-registers-are-preserved-through-a-linux-x86-64-function-call/55207335#55207335
+
+==== ARM calling convention
+
+Call C standard library functions from assembly and vice versa.
+
+* arm
+** link:lkmc/arm.h[] `ENTRY` and `EXIT`
+** link:userland/arch/arm/linux/c_from_asm.S[]
+* aarch64
+** link:lkmc/aarch64.h[] `ENTRY` and `EXIT`
+** link:userland/arch/aarch64/inline_asm/linux/asm_from_c.c[]
+
+ARM Architecture Procedure Call Standard (AAPCS) is the name that ARM Holdings gives to the calling convention.
+
+Official specification: http://infocenter.arm.com/help/topic/com.arm.doc.ihi0042f/IHI0042F_aapcs.pdf
+
+Bibliography:
+
+* https://en.wikipedia.org/wiki/Calling_convention#ARM_(A32) Wiki contains the master list as usual.
+* https://stackoverflow.com/questions/8422287/calling-c-functions-from-arm-assembly
+* https://stackoverflow.com/questions/261419/arm-to-c-calling-convention-registers-to-save
+* https://stackoverflow.com/questions/10494848/arm-whats-the-difference-between-apcs-and-aapcs-abi
+
+=== GNU GAS assembler
+
+https://en.wikipedia.org/wiki/GNU_Assembler[GNU GAS] is the default assembler used by GDB, and therefore it completely dominates in Linux.
+
+The Linux kernel in particular uses GNU GAS assembly extensively for the arch specific parts under `arch/`.
+
+==== GNU GAS assembler comments
+
+In this tutorial, we use exclusively C Preprocessor `/**/` comments because:
+
+* they are the same for all archs
+* we are already stuck to the C Preprocessor because GNU GAS macros are unusable so we need `#define`
+* mixing `#` GNU GAS comments and `#define` is a bad idea ;-)
+
+But just in case you want to suffer, see this full explanation of GNU GAS comments: https://stackoverflow.com/questions/15663280/how-to-make-the-gnu-assembler-use-a-slash-for-comments/51991349#51991349
+
+Examples:
+
+* link:userland/arch/arm/comments.S[]
+* link:userland/arch/aarch64/comments.S[]
+
+==== GNU GAS assembler immediates
+
+Summary:
+
+* x86 always dollar `$` everywhere.
+* ARM: can use either `#`, `$` or nothing depending on v7 vs v8 and <<gnu-gas-assembler-arm-unified-syntax,`.syntax unified`>>.
++
+Fuller explanation at: https://stackoverflow.com/questions/21652884/is-the-hash-required-for-immediate-values-in-arm-assembly/51987780#51987780
+
+Examples:
+
+* link:userland/arch/arm/immediates.S[]
+* link:userland/arch/aarch64/immediates.S[]
+
+==== GNU GAS assembler data sizes
+
+Let's see how many bytes go into each data type:
+
+* link:userland/arch/x86_64/gas_data_sizes.S[]
+* link:userland/arch/arm/gas_data_sizes.S[]
+* link:userland/arch/aarch64/gas_data_sizes.S[]
+
+The results are shown at: xref:table-gas-data-sizes[xrefstyle=full].
+
+[[table-gas-data-sizes]]
+.Summary of GNU GAS assembler data sizes
+[options="header"]
+|===
+|.byte |.word |.long |.quad |.octa
+
+|x86
+|1
+|2
+|4
+|8
+|16
+
+|arm
+|1
+|4
+|4
+|8
+|16
+
+|aarch64
+|1
+|4
+|4
+|8
+|16
+
+|===
+
+and also keep in mind that according to the manual:
+
+* `.int` is the same as `.long`
+* `.hword` is the same as `.short` which is usually the same as `.word`
+
+Bibliography:
+
+* https://sourceware.org/binutils/docs-2.32/as/Pseudo-Ops.html#Pseudo-Ops
+* https://stackoverflow.com/questions/43005411/how-does-the-quad-directive-work-in-assembly/43006616
+* https://gist.github.com/steakknife/d47d0b19a24817f48027
+
+===== GNU GAS assembler ARM specifics
+
+====== GNU GAS assembler ARM unified syntax
+
+There are two types of ARMv7 assemblies:
+
+* `.syntax divided`
+* `.syntax unified`
+
+They are very similar, but unified is the new and better one, which we use in this tutorial.
+
+Unfortunately, for backwards compatibility, GNU AS 2.31.1 and GCC 8.2.0 still use `.syntax divided` by default.
+
+The concept of unified assembly is mentioned in ARM's official assembler documentation: http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.dui0473c/BABJIHGJ.html and is often called Unified Assembly Language (UAL).
+
+Some of the differences include:
+
+* `#` is optional in unified syntax int literals, see <<gnu-gas-assembler-immediates>>
+* many mnemonics changed:
+** most of them are condition code position changes, e.g. ANDSEQ vs ANDEQS: https://stackoverflow.com/questions/51184921/wierd-gcc-behaviour-with-arm-assembler-andseq-instruction
+** but there are some more drastic ones, e.g. SWI vs <<arm-svc-instruction,SVC>>: https://stackoverflow.com/questions/8459279/are-arm-instructuons-swi-and-svc-exactly-same-thing/54078731#54078731
+* cannot have implicit destination with shift, see: xref:arm-shift-suffixes[xrefstyle=full]
+
+===== GNU GAS assembler ARM .n and .w suffixes
+
+When reading disassembly, many instructions have either a `.n` or `.w` suffix.
+
+`.n` means narrow, and stands for the <<arm-instruction-encodings,Thumb encoding>> of an instructions, while `.w` means wide and stands for the ARM encoding.
+
+Bibliography: https://stackoverflow.com/questions/27147043/n-suffix-to-branch-instruction
+
+==== GNU GAS assembler char literals
+
+link:userland/arch/x86_64/char_literals.S[]
+
+https://stackoverflow.com/questions/33246811/how-to-use-character-literals-in-gnu-gas-to-replace-numbers
+
+This syntax plays horribly with the C preprocessor:
+
+....
+MACRO($'a)
+....
+
+fails because cpp treats string and char literals magically.
+
+=== NOP instructions
+
+* x86: link:userland/arch/x86_64/nop.S[NOP]
+* ARM: xref:arm-nop-instruction[xrefstyle=full]
+
+No OPeration.
+
+Does nothing except take up one processor cycle and occupy some instruction memory.
+
+Applications: https://stackoverflow.com/questions/234906/whats-the-purpose-of-the-nop-opcode
+

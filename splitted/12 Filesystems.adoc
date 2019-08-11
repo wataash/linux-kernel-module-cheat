@@ -1,0 +1,81 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Filesystems
+
+=== OverlayFS
+
+https://en.wikipedia.org/wiki/OverlayFS[OverlayFS] is a filesystem merged in the Linux kernel in 3.18.
+
+As the name suggests, OverlayFS allows you to merge multiple directories into one. The following minimal runnable examples should give you an intuition on how it works:
+
+* https://askubuntu.com/questions/109413/how-do-i-use-overlayfs/1075564#1075564
+* https://stackoverflow.com/questions/31044982/how-to-use-multiple-lower-layers-in-overlayfs/52792397#52792397
+
+We are very interested in this filesystem because we are looking for a way to make host cross compiled executables appear on the guest root `/` without reboot.
+
+This would have several advantages:
+
+* makes it faster to test modified guest programs
+** not rebooting is fundamental for <<gem5>>, where the reboot is very costly.
+** no need to regenerate the root filesystem at all and reboot
+** overcomes the `check_bin_arch` problem as shown at: xref:rpath[xrefstyle=full]
+* we could keep the base root filesystem very small, which implies:
+** less host disk usage, no need to copy the entire `./getvar out_rootfs_overlay_dir` to the image again
+** no need to worry about <<br2_target_rootfs_ext2_size>>
+
+We can already make host files appear on the guest with <<9p>>, but they appear on a subdirectory instead of the root.
+
+If they would appear on the root instead, that would be even more awesome, because you would just use the exact same paths relative to the root transparently.
+
+For example, we wouldn't have to mess around with variables such as `PATH` and `LD_LIBRARY_PATH`.
+
+The idea is to:
+
+* 9P mount our overlay directory `./getvar out_rootfs_overlay_dir` on the guest, which we already do at `/mnt/9p/out_rootfs_overlay`
+* then create an overlay with that directory and the root, and `chroot` into it.
++
+I was unable to mount directly to `/` avoid the `chroot`:
+** https://stackoverflow.com/questions/41119656/how-can-i-overlayfs-the-root-filesystem-on-linux
+** https://unix.stackexchange.com/questions/316018/how-to-use-overlayfs-to-protect-the-root-filesystem
+** https://unix.stackexchange.com/questions/420646/mount-root-as-overlayfs
+
+We already have a prototype of this running from `fstab` on guest at `/mnt/overlay`, but it has the following shortcomings:
+
+* changes to underlying filesystems are not visible on the overlay unless you remount with `mount -r remount /mnt/overlay`, as mentioned https://github.com/torvalds/linux/blob/v4.18/Documentation/filesystems/overlayfs.txt#L332[on the kernel docs]:
++
+....
+Changes to the underlying filesystems while part of a mounted overlay
+filesystem are not allowed.  If the underlying filesystem is changed,
+the behavior of the overlay is undefined, though it will not result in
+a crash or deadlock.
+....
++
+This makes everything very inconvenient if you are inside `chroot` action. You would have to leave `chroot`, remount, then come back.
+* the overlay does not contain sub-filesystems, e.g. `/proc`. We would have to re-mount them. But should be doable with some automation.
+
+Even more awesome than `chroot` would be to `pivot_root`, but I couldn't get that working either:
+
+* https://stackoverflow.com/questions/28015688/pivot-root-device-or-resource-busy
+* https://unix.stackexchange.com/questions/179788/pivot-root-device-or-resource-busy
+
+=== Secondary disk
+
+A simpler and possibly less overhead alternative to <<9P>> would be to generate a secondary disk image with the benchmark you want to rebuild.
+
+Then you can `umount` and re-mount on guest without reboot.
+
+We don't support this yet, but it should not be too hard to hack it up, maybe by hooking into link:rootfs-post-build-script[].
+
+This was not possible from gem5 `fs.py` as of 60600f09c25255b3c8f72da7fb49100e2682093a: https://stackoverflow.com/questions/50862906/how-to-attach-multiple-disk-images-in-a-simulation-with-gem5-fs-py/51037661#51037661
+

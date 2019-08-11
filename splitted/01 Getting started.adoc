@@ -1,0 +1,1376 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Getting started
+
+Each child section describes a possible different setup for this repo.
+
+If you don't know which one to go for, start with <<qemu-buildroot-setup-getting-started>>.
+
+Design goals of this project are documented at: xref:design-goals[xrefstyle=full].
+
+=== QEMU Buildroot setup
+
+==== QEMU Buildroot setup getting started
+
+This setup has been mostly tested on Ubuntu. For other host operating systems see: xref:supported-hosts[xrefstyle=full]. For greater stability, consider using the <<release-procedure,latest release>> instead of master: https://github.com/cirosantilli/linux-kernel-module-cheat/releases
+
+Reserve 12Gb of disk and run:
+
+....
+git clone https://github.com/cirosantilli/linux-kernel-module-cheat
+cd linux-kernel-module-cheat
+./build --download-dependencies qemu-buildroot
+./run
+....
+
+You don't need to clone recursively even though we have `.git` submodules: `download-dependencies` fetches just the submodules that you need for this build to save time.
+
+If something goes wrong, see: xref:common-build-issues[xrefstyle=full] and use our issue tracker: https://github.com/cirosantilli/linux-kernel-module-cheat/issues
+
+The initial build will take a while (30 minutes to 2 hours) to clone and build, see <<benchmark-builds>> for more details.
+
+If you don't want to wait, you could also try the following faster but much more limited methods:
+
+* <<prebuilt>>
+* <<host>>
+
+but you will soon find that they are simply not enough if you anywhere near serious about systems programming.
+
+After `./run`, QEMU opens up leaving you in the <<lkmc_home,`/lkmc/` directory>>, and you can start playing with the kernel modules inside the simulated system:
+
+....
+insmod hello.ko
+insmod hello2.ko
+rmmod hello
+rmmod hello2
+....
+
+This should print to the screen:
+
+....
+hello init
+hello2 init
+hello cleanup
+hello2 cleanup
+....
+
+which are `printk` messages from `init` and `cleanup` methods of those modules.
+
+Sources:
+
+* link:kernel_modules/hello.c[]
+* link:kernel_modules/hello2.c[]
+
+Quit QEMU with:
+
+....
+Ctrl-A X
+....
+
+See also: xref:quit-qemu-from-text-mode[xrefstyle=full].
+
+All available modules can be found in the link:kernel_modules[] directory.
+
+It is super easy to build for different <<cpu-architecture,CPU architectures>>, just use the `--arch` option:
+
+....
+./build --arch aarch64 --download-dependencies qemu-buildroot
+./run --arch aarch64
+....
+
+To avoid typing `--arch aarch64` many times, you can set the default arch as explained at: xref:default-command-line-arguments[xrefstyle=full]
+
+I now urge you to read the following sections which contain widely applicable information:
+
+* <<run-command-after-boot>>
+* <<clean-the-build>>
+* <<build-the-documentation>>
+* Linux kernel
+** <<printk>>
+** <<kernel-command-line-parameters>>
+
+Once you use <<gdb>> and <<tmux>>, your terminal will look a bit like this:
+
+....
+[    1.451857] input: AT Translated Set 2 keyboard as /devices/platform/i8042/s1│loading @0xffffffffc0000000: ../kernel_modules-1.0//timer.ko
+[    1.454310] ledtrig-cpu: registered to indicate activity on CPUs             │(gdb) b lkmc_timer_callback
+[    1.455621] usbcore: registered new interface driver usbhid                  │Breakpoint 1 at 0xffffffffc0000000: file /home/ciro/bak/git/linux-kernel-module
+[    1.455811] usbhid: USB HID core driver                                      │-cheat/out/x86_64/buildroot/build/kernel_modules-1.0/./timer.c, line 28.
+[    1.462044] NET: Registered protocol family 10                               │(gdb) c
+[    1.467911] Segment Routing with IPv6                                        │Continuing.
+[    1.468407] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver              │
+[    1.470859] NET: Registered protocol family 17                               │Breakpoint 1, lkmc_timer_callback (data=0xffffffffc0002000 <mytimer>)
+[    1.472017] 9pnet: Installing 9P2000 support                                 │    at /linux-kernel-module-cheat//out/x86_64/buildroot/build/
+[    1.475461] sched_clock: Marking stable (1473574872, 0)->(1554017593, -80442)│kernel_modules-1.0/./timer.c:28
+[    1.479419] ALSA device list:                                                │28      {
+[    1.479567]   No soundcards found.                                           │(gdb) c
+[    1.619187] ata2.00: ATAPI: QEMU DVD-ROM, 2.5+, max UDMA/100                 │Continuing.
+[    1.622954] ata2.00: configured for MWDMA2                                   │
+[    1.644048] scsi 1:0:0:0: CD-ROM            QEMU     QEMU DVD-ROM     2.5+ P5│Breakpoint 1, lkmc_timer_callback (data=0xffffffffc0002000 <mytimer>)
+[    1.741966] tsc: Refined TSC clocksource calibration: 2904.010 MHz           │    at /linux-kernel-module-cheat//out/x86_64/buildroot/build/
+[    1.742796] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x29dc0f4s│kernel_modules-1.0/./timer.c:28
+[    1.743648] clocksource: Switched to clocksource tsc                         │28      {
+[    2.072945] input: ImExPS/2 Generic Explorer Mouse as /devices/platform/i8043│(gdb) bt
+[    2.078641] EXT4-fs (vda): couldn't mount as ext3 due to feature incompatibis│#0  lkmc_timer_callback (data=0xffffffffc0002000 <mytimer>)
+[    2.080350] EXT4-fs (vda): mounting ext2 file system using the ext4 subsystem│    at /linux-kernel-module-cheat//out/x86_64/buildroot/build/
+[    2.088978] EXT4-fs (vda): mounted filesystem without journal. Opts: (null)  │kernel_modules-1.0/./timer.c:28
+[    2.089872] VFS: Mounted root (ext2 filesystem) readonly on device 254:0.    │#1  0xffffffff810ab494 in call_timer_fn (timer=0xffffffffc0002000 <mytimer>,
+[    2.097168] devtmpfs: mounted                                                │    fn=0xffffffffc0000000 <lkmc_timer_callback>) at kernel/time/timer.c:1326
+[    2.126472] Freeing unused kernel memory: 1264K                              │#2  0xffffffff810ab71f in expire_timers (head=<optimized out>,
+[    2.126706] Write protecting the kernel read-only data: 16384k               │    base=<optimized out>) at kernel/time/timer.c:1363
+[    2.129388] Freeing unused kernel memory: 2024K                              │#3  __run_timers (base=<optimized out>) at kernel/time/timer.c:1666
+[    2.139370] Freeing unused kernel memory: 1284K                              │#4  run_timer_softirq (h=<optimized out>) at kernel/time/timer.c:1692
+[    2.246231] EXT4-fs (vda): warning: mounting unchecked fs, running e2fsck isd│#5  0xffffffff81a000cc in __do_softirq () at kernel/softirq.c:285
+[    2.259574] EXT4-fs (vda): re-mounted. Opts: block_validity,barrier,user_xatr│#6  0xffffffff810577cc in invoke_softirq () at kernel/softirq.c:365
+hello S98                                                                       │#7  irq_exit () at kernel/softirq.c:405
+                                                                                │#8  0xffffffff818021ba in exiting_irq () at ./arch/x86/include/asm/apic.h:541
+Apr 15 23:59:23 login[49]: root login on 'console'                              │#9  smp_apic_timer_interrupt (regs=<optimized out>)
+hello /root/.profile                                                            │    at arch/x86/kernel/apic/apic.c:1052
+# insmod /timer.ko                                                              │#10 0xffffffff8180190f in apic_timer_interrupt ()
+[    6.791945] timer: loading out-of-tree module taints kernel.                 │    at arch/x86/entry/entry_64.S:857
+# [    7.821621] 4294894248                                                     │#11 0xffffffff82003df8 in init_thread_union ()
+[    8.851385] 4294894504                                                       │#12 0x0000000000000000 in ?? ()
+                                                                                │(gdb)
+....
+
+==== How to hack stuff
+
+Besides a seamless <<qemu-buildroot-setup-getting-started,initial build>>, this project also aims to make it effortless to modify and rebuild several major components of the system, to serve as an awesome development setup.
+
+===== Your first Linux kernel hack
+
+Let's hack up the <<linux-kernel-entry-point, Linux kernel entry point>>, which is an easy place to start.
+
+Open the file:
+
+....
+vim submodules/linux/init/main.c
+....
+
+and find the `start_kernel` function, then add there a:
+
+....
+pr_info("I'VE HACKED THE LINUX KERNEL!!!");
+....
+
+Then rebuild the Linux kernel, quit QEMU and reboot the modified kernel:
+
+....
+./build-linux
+./run
+....
+
+and, surely enough, your message has appeared at the beginning of the boot:
+
+....
+<6>[    0.000000] I'VE HACKED THE LINUX KERNEL!!!
+....
+
+So you are now officially a Linux kernel hacker, way to go!
+
+We could have used just link:build[] to rebuild the kernel as in the <<qemu-buildroot-setup-getting-started,initial build>> instead of link:build-linux[], but building just the required individual components is preferred during development:
+
+* saves a few seconds from parsing Make scripts and reading timestamps
+* makes it easier to understand what is being done in more detail
+* allows passing more specific options to customize the build
+
+The link:build[] script is just a lightweight wrapper that calls the smaller build scripts, and you can see what `./build` does with:
+
+....
+./build --dry-run
+....
+
+When you reach difficulties, QEMU makes it possible to easily GDB step debug the Linux kernel source code, see: xref:gdb[xrefstyle=full].
+
+===== Your first kernel module hack
+
+Edit link:kernel_modules/hello.c[] to contain:
+
+....
+pr_info("hello init hacked\n");
+....
+
+and rebuild with:
+
+....
+./build-modules
+....
+
+Now there are two ways to test it out: the fast way, and the safe way.
+
+The fast way is, without quitting or rebooting QEMU, just directly re-insert the module with:
+
+....
+insmod /mnt/9p/out_rootfs_overlay/lkmc/hello.ko
+....
+
+and the new `pr_info` message should now show on the terminal at the end of the boot.
+
+This works because we have a <<9p>> mount there setup by default, which mounts the host directory that contains the build outputs on the guest:
+
+....
+ls "$(./getvar out_rootfs_overlay_dir)"
+....
+
+The fast method is slightly risky because your previously insmodded buggy kernel module attempt might have corrupted the kernel memory, which could affect future runs.
+
+Such failures are however unlikely, and you should be fine if you don't see anything weird happening.
+
+The safe way, is to fist <<rebuild-buildroot-while-running,quit QEMU>>, rebuild the modules, put them in the root filesystem, and then reboot:
+
+....
+./build-modules
+./build-buildroot
+./run --eval-after 'insmod hello.ko'
+....
+
+`./build-buildroot` is required after `./build-modules` because it re-generates the root filesystem with the modules that we compiled at `./build-modules`.
+
+You can see that `./build` does that as well, by running:
+
+....
+./build --dry-run
+....
+
+`--eval-after` is optional: you could just type `insmod hello.ko` in the terminal, but this makes it run automatically at the end of boot, and then drops you into a shell.
+
+If the guest and host are the same arch, typically x86_64, you can speed up boot further with <<kvm>>:
+
+....
+./run --kvm
+....
+
+All of this put together makes the safe procedure acceptably fast for regular development as well.
+
+It is also easy to GDB step debug kernel modules with our setup, see: xref:gdb-step-debug-kernel-module[xrefstyle=full].
+
+===== Your first QEMU hack
+
+Not satisfied with mere software? OK then, let's hack up the QEMU x86 CPU identification:
+
+....
+vim submodules/qemu/target/i386/cpu.c
+....
+
+and modify:
+
+....
+.model_id = "QEMU Virtual CPU version " QEMU_HW_VERSION,
+....
+
+to contain:
+
+....
+.model_id = "QEMU Virtual CPU version HACKED " QEMU_HW_VERSION,
+....
+
+then as usual rebuild and re-run:
+
+.....
+./build-qemu
+./run --eval-after 'grep "model name" /proc/cpuinfo'
+.....
+
+and once again, there is your message: QEMU communicated it to the Linux kernel, which printed it out.
+
+You have now gone from newb to hardware hacker in a mere 15 minutes, your rate of progress is truly astounding!!!
+
+Seriously though, if you want to be a real hardware hacker, it just can't be done with open source tools as of 2018. The root obstacle is that:
+
+* https://en.wikipedia.org/wiki/Semiconductor_fabrication_plant[Silicon fabs] don't publish reveal their https://en.wikipedia.org/wiki/Design_rule_checking[design rules]
+* which implies that there are no decent https://en.wikipedia.org/wiki/Standard_cell[standard cell libraries]. See also: https://www.quora.com/Are-there-good-open-source-standard-cell-libraries-to-learn-IC-synthesis-with-EDA-tools/answer/Ciro-Santilli
+* which implies that people can't develop open source https://en.wikipedia.org/wiki/Electronic_design_automation[EDA tools]
+* which implies that you can't get decent https://community.cadence.com/cadence_blogs_8/b/di/posts/hls-ppa-is-it-all-you-need-to-know[power, performance and area] estimates
+
+The only thing you can do with open source is purely functional designs with https://en.wikipedia.org/wiki/Verilator[Verilator], but you will never know if it can be actually produced and how efficient it can be.
+
+If you really want to develop semiconductors, your only choice is to join an university or a semiconductor company that has the EDA licenses.
+
+See also: xref:should-you-waste-your-life-with-systems-programming[xrefstyle=full].
+
+While hacking QEMU, you will likely want to GDB step its source. That is trivial since QEMU is just another userland program like any other, but our setup has a shortcut to make it even more convenient, see: xref:debug-the-emulator[xrefstyle=full].
+
+===== Your first glibc hack
+
+We use <<libc-choice,glibc as our default libc now>>, and it is tracked as an unmodified submodule at link:submodules/glibc[], at the exact same version that Buildroot has it, which can be found at: https://github.com/buildroot/buildroot/blob/2018.05/package/glibc/glibc.mk#L13[package/glibc/glibc.mk]. Buildroot 2018.05 applies no patches.
+
+Let's hack up the `puts` function:
+
+....
+./build-buildroot -- glibc-reconfigure
+....
+
+with the patch:
+
+....
+diff --git a/libio/ioputs.c b/libio/ioputs.c
+index 706b20b492..23185948f3 100644
+--- a/libio/ioputs.c
++++ b/libio/ioputs.c
+@@ -38,8 +38,9 @@ _IO_puts (const char *str)
+   if ((_IO_vtable_offset (_IO_stdout) != 0
+        || _IO_fwide (_IO_stdout, -1) == -1)
+       && _IO_sputn (_IO_stdout, str, len) == len
++      && _IO_sputn (_IO_stdout, " hacked", 7) == 7
+       && _IO_putc_unlocked ('\n', _IO_stdout) != EOF)
+-    result = MIN (INT_MAX, len + 1);
++    result = MIN (INT_MAX, len + 1 + 7);
+
+   _IO_release_lock (_IO_stdout);
+   return result;
+....
+
+And then:
+
+....
+./run --eval-after './c/hello.out'
+....
+
+outputs:
+
+....
+hello hacked
+....
+
+Lol!
+
+We can also test our hacked glibc on <<user-mode-simulation>> with:
+
+....
+./run --userland userland/c/hello.c
+....
+
+I just noticed that this is actually a good way to develop glibc for other archs.
+
+In this example, we got away without recompiling the userland program because we made a change that did not affect the glibc ABI, see this answer for an introduction to ABI stability: https://stackoverflow.com/questions/2171177/what-is-an-application-binary-interface-abi/54967743#54967743
+
+Note that for arch agnostic features that don't rely on bleeding kernel changes that you host doesn't yet have, you can develop glibc natively as explained at:
+
+* https://stackoverflow.com/questions/10412684/how-to-compile-my-own-glibc-c-standard-library-from-source-and-use-it/52454710#52454710
+* https://stackoverflow.com/questions/847179/multiple-glibc-libraries-on-a-single-host/52454603#52454603
+* https://stackoverflow.com/questions/2856438/how-can-i-link-to-a-specific-glibc-version/52550158#52550158 more focus on symbol versioning, but no one knows how to do it, so I answered
+
+Tested on a30ed0f047523ff2368d421ee2cce0800682c44e + 1.
+
+===== Your first Binutils hack
+
+Have you ever felt that a single `inc` instruction was not enough? Really? Me too!
+
+So let's hack the <<gnu-gas-assembler>>, which is part of https://en.wikipedia.org/wiki/GNU_Binutils[GNU Binutils], to add a new shiny version of `inc` called... `myinc`!
+
+GCC uses GNU GAS as its backend, so we will test out new mnemonic with an <<gcc-inline-assembly>> test program: link:userland/arch/x86_64/binutils_hack.c[], which is just a copy of link:userland/arch/x86_64/binutils_nohack.c[] but with `myinc` instead of `inc`.
+
+The inline assembly is disabled with an `#ifdef`, so first modify the source to enable that.
+
+Then, try to build userland:
+
+....
+./build-userland
+....
+
+and watch it fail with:
+
+....
+binutils_hack.c:8: Error: no such instruction: `myinc %rax'
+....
+
+Now, edit the file
+
+....
+vim submodules/binutils-gdb/opcodes/i386-tbl.h
+....
+
+and add a copy of the `"inc"` instruction just next to it, but with the new name `"myinc"`:
+
+....
+diff --git a/opcodes/i386-tbl.h b/opcodes/i386-tbl.h
+index af583ce578..3cc341f303 100644
+--- a/opcodes/i386-tbl.h
++++ b/opcodes/i386-tbl.h
+@@ -1502,6 +1502,19 @@ const insn_template i386_optab[] =
+     { { { 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+ 	  0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0,
+ 	  1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 } } } },
++  { "myinc", 1, 0xfe, 0x0, 1,
++    { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 } },
++    { 0, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++      0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
++      0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++      0, 0, 0, 0, 0, 0 },
++    { { { 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++	  0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0,
++	  1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0 } } } },
+   { "sub", 2, 0x28, None, 1,
+     { { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+....
+
+Finally, rebuild Binutils, userland and test our program with <<user-mode-simulation>>:
+
+....
+./build-buildroot -- host-binutils-rebuild
+./build-userland --static
+./run --static --userland userland/arch/x86_64/binutils_hack.c
+....
+
+and we se that `myinc` worked since the assert did not fail!
+
+Tested on b60784d59bee993bf0de5cde6c6380dd69420dda + 1.
+
+===== Your first GCC hack
+
+OK, now time to hack GCC.
+
+For convenience, let's use the <<user-mode-simulation>>.
+
+If we run the program link:userland/c/gcc_hack.c[]:
+
+....
+./build-userland --static
+./run --static --userland userland/c/gcc_hack.c
+....
+
+it produces the normal boring output:
+
+....
+i = 2
+j = 0
+....
+
+So how about we swap `++` and `--` to make things more fun?
+
+Open the file:
+
+....
+vim submodules/gcc/gcc/c/c-parser.c
+....
+
+and find the function `c_parser_postfix_expression_after_primary`.
+
+In that function, swap `case CPP_PLUS_PLUS` and `case CPP_MINUS_MINUS`:
+
+....
+diff --git a/gcc/c/c-parser.c b/gcc/c/c-parser.c
+index 101afb8e35f..89535d1759a 100644
+--- a/gcc/c/c-parser.c
++++ b/gcc/c/c-parser.c
+@@ -8529,7 +8529,7 @@ c_parser_postfix_expression_after_primary (c_parser *parser,
+ 		expr.original_type = DECL_BIT_FIELD_TYPE (field);
+ 	    }
+ 	  break;
+-	case CPP_PLUS_PLUS:
++	case CPP_MINUS_MINUS:
+ 	  /* Postincrement.  */
+ 	  start = expr.get_start ();
+ 	  finish = c_parser_peek_token (parser)->get_finish ();
+@@ -8548,7 +8548,7 @@ c_parser_postfix_expression_after_primary (c_parser *parser,
+ 	  expr.original_code = ERROR_MARK;
+ 	  expr.original_type = NULL;
+ 	  break;
+-	case CPP_MINUS_MINUS:
++	case CPP_PLUS_PLUS:
+ 	  /* Postdecrement.  */
+ 	  start = expr.get_start ();
+ 	  finish = c_parser_peek_token (parser)->get_finish ();
+....
+
+Now rebuild GCC, the program and re-run it:
+
+....
+./build-buildroot -- host-gcc-final-rebuild
+./build-userland --static
+./run --static --userland userland/c/gcc_hack.c
+....
+
+and the new ouptut is now:
+
+....
+i = 2
+j = 0
+....
+
+We need to use the ugly `-final` thing because GCC has to packages in Buildroot, `-initial` and `-final`: https://stackoverflow.com/questions/54992977/how-to-select-an-override-srcdir-source-for-gcc-when-building-buildroot No one is able to example precisely with a minimal example why this is required:
+
+* https://stackoverflow.com/questions/39883865/why-multiple-passes-for-building-linux-from-scratch-lfs
+* https://stackoverflow.com/questions/27457835/why-do-cross-compilers-have-a-two-stage-compilation
+
+==== About the QEMU Buildroot setup
+
+This is our reference setup, and the best supported one, use it unless you have good reason not to.
+
+It was historically the first one we did, and all sections have been tested with this setup unless explicitly noted.
+
+Read the following sections for further introductory material:
+
+* <<introduction-to-qemu>>
+* <<introduction-to-buildroot>>
+
+=== gem5 Buildroot setup
+
+==== About the gem5 Buildroot setup
+
+This setup is like the <<qemu-buildroot-setup>>, but it uses http://gem5.org/[gem5] instead of QEMU as a system simulator.
+
+QEMU tries to run as fast as possible and give correct results at the end, but it does not tell us how many CPU cycles it takes to do something, just the number of instructions it ran. This kind of simulation is known as functional simulation.
+
+The number of instructions executed is a very poor estimator of performance because in modern computers, a lot of time is spent waiting for memory requests rather than the instructions themselves.
+
+gem5 on the other hand, can simulate the system in more detail than QEMU, including:
+
+* simplified CPU pipeline
+* caches
+* DRAM timing
+
+and can therefore be used to estimate system performance, see: xref:gem5-run-benchmark[xrefstyle=full] for an example.
+
+The downside of gem5 much slower than QEMU because of the greater simulation detail.
+
+See <<gem5-vs-qemu>> for a more thorough comparison.
+
+==== gem5 Buildroot setup getting started
+
+For the most part, if you just add the `--emulator gem5` option or `*-gem5` suffix to all commands and everything should magically work.
+
+If you haven't built Buildroot yet for <<qemu-buildroot-setup>>, you can build from the beginning with:
+
+....
+./build --download-dependencies gem5-buildroot
+./run --emulator gem5
+....
+
+If you have already built previously, don't be afraid: gem5 and QEMU use almost the same root filesystem and kernel, so `./build` will be fast.
+
+Remember that the gem5 boot is <<benchmark-linux-kernel-boot,considerably slower>> than QEMU since the simulation is more detailed.
+
+To get a terminal, either open a new shell and run:
+
+....
+./gem5-shell
+....
+
+You can quit the shell without killing gem5 by typing tilde followed by a period:
+
+....
+~.
+....
+
+If you are inside <<tmux>>, which I highly recommend, you can both run gem5 stdout and open the guest terminal on a split window with:
+
+....
+./run --emulator gem5 --tmux
+....
+
+See also: xref:tmux-gem5[xrefstyle=full].
+
+At the end of boot, it might not be very clear that you have the shell since some <<printk>> messages may appear in front of the prompt like this:
+
+....
+# <6>[    1.215329] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x1cd486fa865, max_idle_ns: 440795259574 ns
+<6>[    1.215351] clocksource: Switched to clocksource tsc
+....
+
+but if you look closely, the `PS1` prompt marker `#` is there already, just hit enter and a clear prompt line will appear.
+
+If you forgot to open the shell and gem5 exit, you can inspect the terminal output post-mortem at:
+
+....
+less "$(./getvar --emulator gem5 m5out_dir)/system.pc.com_1.device"
+....
+
+More gem5 information is present at: xref:gem5[xrefstyle=full]
+
+Good next steps are:
+
+* <<gem5-run-benchmark>>
+* <<m5out-directory>>
+* <<m5ops>>
+
+[[docker]]
+=== Docker host setup
+
+This repository has been tested inside clean https://en.wikipedia.org/wiki/Docker_(software)[Docker] containers.
+
+This is a good option if you are on a Linux host, but the native setup failed due to your weird host distribution, and you have better things to do with your life than to debug it. See also: xref:supported-hosts[xrefstyle=full].
+
+For example, to do a <<qemu-buildroot-setup>> inside Docker, run:
+
+....
+sudo apt-get install docker
+./run-docker create && \
+./run-docker sh -- ./build --download-dependencies qemu-buildroot
+./run-docker sh
+....
+
+You are now left inside a shell in the Docker! From there, just run as usual:
+
+....
+./run
+....
+
+The host git top level directory is mounted inside the guest with a https://stackoverflow.com/questions/23439126/how-to-mount-a-host-directory-in-a-docker-container[Docker volume], which means for example that you can use your host's GUI text editor directly on the files. Just don't forget that if you nuke that directory on the guest, then it gets nuked on the host as well!
+
+Command breakdown:
+
+* `./run-docker create`: create the image and container.
++
+Needed only the very first time you use Docker, or if you run `./run-docker DESTROY` to restart for scratch, or save some disk space.
++
+The image and container name is `lkmc`. The container shows under:
++
+....
+docker ps -a
+....
++
+and the image shows under:
++
+....
+docker images
+....
+* `./run-docker sh`: open a shell on the container.
++
+If it has not been started previously, start it. This can also be done explicitly with:
++
+....
+./run-docker start
+....
++
+Quit the shell as usual with `Ctrl-D`
++
+This can be called multiple times from different host terminals to open multiple shells.
+* `./run-docker stop`: stop the container.
++
+This might save a bit of CPU and RAM once you stop working on this project, but it should not be a lot.
+* `./run-docker DESTROY`: delete the container and image.
++
+This doesn't really clean the build, since we mount the guest's working directory on the host git top-level, so you basically just got rid of the `apt-get` installs.
++
+To actually delete the Docker build, run on host:
++
+....
+# sudo rm -rf out.docker
+....
+
+To use <<gdb>> from inside Docker, you need a second shell inside the container. You can either do that from another shell with:
+
+....
+./run-docker sh
+....
+
+or even better, by starting a <<tmux>> session inside the container. We install `tmux` by default in the container.
+
+You can also start a second shell and run a command in it at the same time with:
+
+....
+./run-docker sh -- ./run-gdb start_kernel
+....
+
+To use <<qemu-graphic-mode>> from Docker, run:
+
+....
+./run --graphic --vnc
+....
+
+and then on host:
+
+....
+sudo apt-get install vinagre
+./vnc
+....
+
+TODO make files created inside Docker be owned by the current user in host instead of `root`:
+
+* https://stackoverflow.com/questions/33681396/how-do-i-write-to-a-volume-container-as-non-root-in-docker
+* https://stackoverflow.com/questions/23544282/what-is-the-best-way-to-manage-permissions-for-docker-shared-volumes
+* https://stackoverflow.com/questions/31779802/shared-volume-file-permissions-ownership-docker
+
+[[prebuilt]]
+=== Prebuilt setup
+
+==== About the prebuilt setup
+
+This setup uses prebuilt binaries that we upload to GitHub from time to time.
+
+We don't currently provide a full prebuilt because it would be too big to host freely, notably because of the cross toolchain.
+
+Our prebuilts currently include:
+
+* <<qemu-buildroot-setup>> binaries
+** Linux kernel
+** root filesystem
+* <<baremetal-setup>> binaries for QEMU
+
+For more details, see our our <<release,release procedure>>.
+
+Advantage of this setup: saves time and disk space on the initial install, which is expensive in largely due to building the toolchain.
+
+The limitations are severe however:
+
+* can't <<gdb,GDB step debug the kernel>>, since the source and cross toolchain with GDB are not available. Buildroot cannot easily use a host toolchain: xref:prebuilt-toolchain[xrefstyle=full].
++
+Maybe we could work around this by just downloading the kernel source somehow, and using a host prebuilt GDB, but we felt that it would be too messy and unreliable.
+* you won't get the latest version of this repository. Our <<travis>> attempt to automate builds failed, and storing a release for every commit would likely make GitHub mad at us anyways.
+* <<gem5>> is not currently supported. The major blocking point is how to avoid distributing the kernel images twice: once for gem5 which uses `vmlinux`, and once for QEMU which uses `arch/*` images, see also:
+** https://github.com/cirosantilli/linux-kernel-module-cheat/issues/79
+** <<vmlinux-vs-bzimage-vs-zimage-vs-image>>.
+
+This setup might be good enough for those developing simulators, as that requires less image modification. But once again, if you are serious about this, why not just let your computer build the <<qemu-buildroot-setup,full featured setup>> while you take a coffee or a nap? :-)
+
+==== Prebuilt setup getting started
+
+Checkout to the latest tag and use the Ubuntu packaged QEMU to boot Linux:
+
+....
+sudo apt-get install qemu-system-x86
+git clone https://github.com/cirosantilli/linux-kernel-module-cheat
+cd linux-kernel-module-cheat
+git checkout "$(git rev-list --tags --max-count=1)"
+./release-download-latest
+unzip lkmc-*.zip
+./run --qemu-which host
+....
+
+You have to checkout to the latest tag to ensure that the scripts match the release format: https://stackoverflow.com/questions/1404796/how-to-get-the-latest-tag-name-in-current-branch-in-git
+
+This is known not to work for aarch64 on an Ubuntu 16.04 host with QEMU 2.5.0, presumably because QEMU is too old, the terminal does not show any output. I haven't investigated why.
+
+Or to run a baremetal example instead:
+
+....
+./run \
+  --arch aarch64 \
+  --baremetal userland/c/hello.c \
+  --qemu-which host \
+;
+....
+
+Be saner and use our custom built QEMU instead:
+
+....
+./build --download-dependencies qemu
+./run
+....
+
+This also allows you to <<your-first-qemu-hack,modify QEMU>> if you're into that sort of thing.
+
+To build the kernel modules as in <<your-first-kernel-module-hack>> do:
+
+....
+git submodule update --depth 1 --init --recursive "$(./getvar linux_source_dir)"
+./build-linux --no-modules-install -- modules_prepare
+./build-modules --gcc-which host
+./run
+....
+
+TODO: for now the only way to test those modules out without <<qemu-buildroot-setup-getting-started,building Buildroot>> is with 9p, since we currently rely on Buildroot to manipulate the root filesystem.
+
+Command explanation:
+
+* `modules_prepare` does the minimal build procedure required on the kernel for us to be able to compile the kernel modules, and is way faster than doing a full kernel build. A full kernel build would also work however.
+* `--gcc-which host` selects your host Ubuntu packaged GCC, since you don't have the Buildroot toolchain
+* `--no-modules-install` is required otherwise the `make modules_install` target we run by default fails, since the kernel wasn't built
+
+To modify the Linux kernel, build and use it as usual:
+
+....
+git submodule update --depth 1 --init --recursive "$(./getvar linux_source_dir)"
+./build-linux
+./run
+....
+
+////
+For gem5, do:
+
+....
+git submodule update --init --depth 1 "$(./getvar linux_source_dir)"
+sudo apt-get install qemu-utils
+./build-gem5
+./run --emulator gem5 --qemu-which host
+....
+
+`qemu-utils` is required because we currently distribute `.qcow2` files which <<gem5-qcow2,gem5 can't handle>>, so we need `qemu-img` to extract them first.
+
+The Linux kernel is required for `extract-vmlinux` to convert the compressed kernel image which QEMU understands into the raw vmlinux that gem5 understands: https://superuser.com/questions/298826/how-do-i-uncompress-vmlinuz-to-vmlinux
+////
+
+////
+[[ubuntu]]
+=== Ubuntu guest setup
+
+==== About the Ubuntu guest setup
+
+This setup is similar to <<prebuilt>>, but instead of using Buildroot for the root filesystem, it downloads an Ubuntu image with Docker, and uses that as the root filesystem.
+
+The rationale for choice of Ubuntu as a second distribution in addition to Buildroot can be found at: xref:linux-distro-choice[xrefstyle=full]
+
+Advantages over Buildroot:
+
+* saves build time
+* you get to play with a huge selection of Debian packages out of the box
+* more representative of most non-embedded production systems than BusyBox
+
+Disadvantages:
+
+* less visibility: https://askubuntu.com/questions/82302/how-to-compile-ubuntu-from-source-code The fact that that question has no answer makes me cringe
+* less compatibility, e.g. no one knows what the officially supported cross compilers are: https://askubuntu.com/questions/1046294/what-are-the-officially-supported-cross-compilers-for-ubuntu-server-alternative
+
+Docker is used here just as an image download provider since it has a wide variety of images. Why we don't just download the regular Ubuntu disk image:
+
+* that image is not ready to boot, but rather goes into an interactive installer: https://askubuntu.com/questions/884534/how-to-run-ubuntu-16-04-desktop-on-qemu/1046792#1046792
+* the default Ubuntu image has a large collection of software, and is large. The docker version is much more minimal.
+
+One alternative would be to use https://wiki.ubuntu.com/Base[Ubuntu base] which can be downloaded from: http://cdimage.ubuntu.com/ubuntu-base That provides a `.tgz` and comes very close to what we obtain with Docker, but without the need for `sudo`.
+
+==== Ubuntu guest setup getting started
+
+TODO
+
+....
+sudo ./build-docker
+./run --docker
+....
+
+`sudo` is required for Docker operations: https://askubuntu.com/questions/477551/how-can-i-use-docker-without-sudo
+////
+
+[[host]]
+=== Host kernel module setup
+
+**THIS IS DANGEROUS (AND FUN), YOU HAVE BEEN WARNED**
+
+This method runs the kernel modules directly on your host computer without a VM, and saves you the compilation time and disk usage of the virtual machine method.
+
+It has however severe limitations:
+
+* can't control which kernel version and build options to use. So some of the modules will likely not compile because of kernel API changes, since https://stackoverflow.com/questions/37098482/how-to-build-a-linux-kernel-module-so-that-it-is-compatible-with-all-kernel-rele/45429681#45429681[the Linux kernel does not have a stable kernel module API].
+* bugs can easily break you system. E.g.:
+** segfaults can trivially lead to a kernel crash, and require a reboot
+** your disk could get erased. Yes, this can also happen with `sudo` from userland. But you should not use `sudo` when developing newbie programs. And for the kernel you don't have the choice not to use `sudo`.
+** even more subtle system corruption such as https://unix.stackexchange.com/questions/78858/cannot-remove-or-reinsert-kernel-module-after-error-while-inserting-it-without-r[not being able to rmmod]
+* can't control which hardware is used, notably the CPU architecture
+* can't step debug it with <<gdb,GDB>> easily. The alternatives are https://en.wikipedia.org/wiki/JTAG[JTAG] or <<kgdb>>, but those are less reliable, and require extra hardware.
+
+Still interested?
+
+....
+./build-modules --gcc-which host --host
+....
+
+Compilation will likely fail for some modules because of kernel or toolchain differences that we can't control on the host.
+
+The best workaround is to compile just your modules with:
+
+....
+./build-modules --gcc-which host --host -- hello hello2
+....
+
+which is equivalent to:
+
+....
+./build-modules \
+  --gcc-which host \
+  --host \
+  -- \
+  kernel_modules/hello.c \
+  kernel_modules/hello2.c \
+;
+....
+
+Or just remove the `.c` extension from the failing files and try again:
+
+....
+cd "$(./getvar kernel_modules_source_dir)"
+mv broken.c broken.c~
+....
+
+Once you manage to compile, and have come to terms with the fact that this may blow up your host, try it out with:
+
+....
+cd "$(./getvar kernel_modules_build_host_subdir)"
+sudo insmod hello.ko
+
+# Our module is there.
+sudo lsmod | grep hello
+
+# Last message should be: hello init
+dmesg -T
+
+sudo rmmod hello
+
+# Last message should be: hello exit
+dmesg -T
+
+# Not present anymore
+sudo lsmod | grep hello
+....
+
+==== Hello host
+
+Minimal host build system example:
+
+....
+cd hello_host_kernel_module
+make
+sudo insmod hello.ko
+dmesg
+sudo rmmod hello.ko
+dmesg
+....
+
+=== Userland setup
+
+==== About the userland setup
+
+In order to test the kernel and emulators, userland content in the form of executables and scripts is of course required, and we store it mostly under:
+
+* link:userland/[]
+* <<rootfs_overlay>>
+* <<add-new-buildroot-packages>>
+
+When we started this repository, it only contained content that interacted very closely with the kernel, or that had required performance analysis.
+
+However, we soon started to notice that this had an increasing overlap with other userland test repositories: we were duplicating build and test infrastructure and even some examples.
+
+Therefore, we decided to consolidate other userland tutorials that we had scattered around into this repository.
+
+Notable userland content included / moving into this repository includes:
+
+* <<userland-assembly>>
+* <<c>>
+* <<cpp>>
+* <<posix>>
+* https://github.com/cirosantilli/algorithm-cheat TODO will be good to move here for performance analysis <<gem5-run-benchmark,with gem5>>
+
+==== Userland setup getting started
+
+There are several ways to run our <<userland-content>>, notably:
+
+* natively on the host as shown at: xref:userland-setup-getting-started-natively[xrefstyle=full]
++
+Can only run examples compatible with your host CPU architecture and OS, but has the fastest setup and runtimes.
+* from user mode simulation with:
++
+--
+** the host prebuilt toolchain: xref:userland-setup-getting-started-with-prebuilt-toolchain-and-qemu-user-mode[xrefstyle=full]
+** the Buildroot toolchain you built yourself: xref:qemu-user-mode-getting-started[xrefstyle=full]
+--
++
+This setup:
++
+--
+** can run most examples, including those for other CPU architectures, with the notable exception of examples that rely on kernel modules
+** can run reproducible approximate performance experiments with gem5, see e.g. <<bst-vs-heap-vs-hashmap>>
+--
+* from full system simulation as shown at: xref:qemu-buildroot-setup-getting-started[xrefstyle=full].
++
+This is the most reproducible and controlled environment, and all examples work there. But also the slower one to setup.
+
+===== Userland setup getting started natively
+
+With this setup, we will use the host toolchain and execute executables directly on the host.
+
+No toolchain build is required, so you can just download your distro toolchain and jump straight into it.
+
+Build, run and example, and clean it in-tree with:
+
+....
+sudo apt-get install gcc
+cd userland
+./build c/hello
+./c/hello.out
+./build --clean
+....
+
+Source: link:userland/c/hello.c[].
+
+Build an entire directory and test it:
+
+....
+cd userland
+./build c
+./test c
+....
+
+Build the current directory and test it:
+
+....
+cd userland/c
+./build
+./test
+....
+
+As mentioned at <<user-mode-tests>>, tests under link:userland/libs[] require certain optional libraries to be installed, and are not built or tested by default.
+
+You can install those libraries with:
+
+....
+cd linux-kernel-module-cheat
+./build --download-dependencies userland-host
+....
+
+and then build the examples and test with:
+
+....
+./build --package-all
+./test --package-all
+....
+
+Pass custom compiler options:
+
+....
+./build --ccflags='-foptimize-sibling-calls -foptimize-strlen' --force-rebuild
+....
+
+Here we used `--force-rebuild` to force rebuild since the sources weren't modified since the last build.
+
+Some CLI options have more specialized flags, e.g. `-O` optimization level:
+
+....
+./build --optimization-level 3 --force-rebuild
+....
+
+See also <<user-mode-static-executables>> for `--static`.
+
+The `build` scripts inside link:userland/[] are just symlinks to link:build-userland-in-tree[] which you can also use from toplevel as:
+
+....
+./build-userland-in-tree
+./build-userland-in-tree userland/c
+./build-userland-in-tree userland/c/hello.c
+....
+
+`build-userland-in-tre` is in turn just a thin wrapper around link:build-userland[]:
+
+....
+./build-userland --gcc-which host --in-tree userland/c
+....
+
+So you can use any option supported by `build-userland` script freely with `build-userland-in-tree` and `build`.
+
+The situation is analogous for link:userland/test[], link:test-executables-in-tree[] and link:test-executables[], which are further documented at: xref:user-mode-tests[xrefstyle=full].
+
+Do a more clean out-of-tree build instead and run the program:
+
+....
+./build-userland --gcc-which host --userland-build-id host
+./run --emulator native --userland userland/c/hello.c --userland-build-id host
+....
+
+Here we:
+
+* put the host executables in a separate <<build-variants,build-variant>> to avoid conflict with Buildroot builds.
+* ran with the `--emulator native` option to run the program natively
+
+In this case you can debub the program with:
+
+....
+./run --debug-vm --emulator native --userland userland/c/hello.c --userland-build-id host
+....
+
+as shown at: xref:debug-the-emulator[xrefstyle=full], although direct GDB host usage works as well of course.
+
+===== Userland setup getting started with prebuilt toolchain and QEMU user mode
+
+If you are lazy to built the Buildroot toolchain and QEMU, but want to run e.g. ARM <<userland-assembly>> in <<user-mode-simulation>>, you can get away on Ubuntu 18.04 with just:
+
+....
+sudo apt-get install gcc-aarch64-linux-gnu qemu-system-aarch64
+./build-userland \
+  --arch aarch64 \
+  --gcc-which host \
+  --userland-build-id host \
+;
+./run \
+  --arch aarch64 \
+  --qemu-which host \
+  --userland-build-id host \
+  --userland userland/c/print_argv.c \
+  --userland-args 'asdf "qw er"' \
+;
+....
+
+where:
+
+* `--gcc-which host`: use the host toolchain.
++
+We must pass this to `./run` as well because QEMU must know which dynamic libraries to use. See also: xref:user-mode-static-executables[xrefstyle=full].
+* `--userland-build-id host`: put the host built into a <<build-variants>>
+
+This present the usual trade-offs of using prebuilts as mentioned at: xref:prebuilt[xrefstyle=full].
+
+Other functionality are analogous, e.g. testing:
+
+....
+./test-executables \
+  --arch aarch64 \
+  --gcc-which host \
+  --qemu-which host \
+  --userland-build-id host \
+;
+....
+
+and <<user-mode-gdb>>:
+
+....
+./run \
+  --arch aarch64 \
+  --gdb \
+  --gcc-which host \
+  --qemu-which host \
+  --userland-build-id host \
+  --userland userland/c/print_argv.c \
+  --userland-args 'asdf "qw er"' \
+;
+....
+
+===== Userland setup getting started full system
+
+First ensure that <<qemu-buildroot-setup>> is working.
+
+After doing that setup, you can already execute your userland programs from inside QEMU: the only missing step is how to rebuild executables and run them.
+
+And the answer is exactly analogous to what is shown at: xref:your-first-kernel-module-hack[xrefstyle=full]
+
+For example, if we modify link:userland/c/hello.c[] to print out something different, we can just rebuild it with:
+
+....
+./build-userland
+....
+
+Source: link:build-userland[]. `./build` calls that script automatically for us when doing the initial full build.
+
+Now, run the program either without rebooting use the <<9p>> mount:
+
+....
+/mnt/9p/out_rootfs_overlay/c/hello.out
+....
+
+or shutdown QEMU, add the executable to the root filesystem:
+
+....
+./build-buildroot
+....
+
+reboot and use the root filesystem as usual:
+
+....
+./hello.out
+....
+
+=== Baremetal setup
+
+==== About the baremetal setup
+
+This setup does not use the Linux kernel nor Buildroot at all: it just runs your very own minimal OS.
+
+`x86_64` is not currently supported, only `arm` and `aarch64`: I had made some x86 bare metal examples at: https://github.com/cirosantilli/x86-bare-metal-examples but I'm lazy to port them here now. Pull requests are welcome.
+
+The main reason this setup is included in this project, despite the word "Linux" being on the project name, is that a lot of the emulator boilerplate can be reused for both use cases.
+
+This setup allows you to make a tiny OS and that runs just a few instructions, use it to fully control the CPU to better understand the simulators for example, or develop your own OS if you are into that.
+
+You can also use C and a subset of the C standard library because we enable https://en.wikipedia.org/wiki/Newlib[Newlib] by default. See also: https://electronics.stackexchange.com/questions/223929/c-standard-libraries-on-bare-metal/400077#400077
+
+Our C bare-metal compiler is built with https://github.com/crosstool-ng/crosstool-ng[crosstool-NG]. If you have already built <<qemu-buildroot-setup,Buildroot>> previously, you will end up with two GCCs installed. Unfortunately I don't see a solution for this, since we need separate toolchains for Newlib on baremetal and glibc on Linux: https://stackoverflow.com/questions/38956680/difference-between-arm-none-eabi-and-arm-linux-gnueabi/38989869#38989869
+
+==== Baremetal setup getting started
+
+Every `.c` file inside link:baremetal/[] and `.S` file inside `baremetal/arch/<arch>/` generates a separate baremetal image.
+
+For example, to run link:baremetal/arch/aarch64/dump_regs.c[] in QEMU do:
+
+....
+./build --arch aarch64 --download-dependencies qemu-baremetal
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/dump_regs.c
+....
+
+And the terminal prints the values of certain system registers. This example prints registers that are only accessible from <<arm-exception-levels,EL1>> or higher, and thus could not be run in userland.
+
+In addition to the examples under link:baremetal/[],  several of the <<userland-content,userland examples>> can also be run in baremetal! This is largely due to the <<about-the-baremetal-setup,awesomeness of Newlib>>.
+
+The examples that work include most <<c,C examples>> that don't rely on complicated syscalls such as threads, and almost all the <<userland-assembly>> examples.
+
+The exact list of userland programs that work in baremetal is specified in <<path-properties>> with the `baremetal` property, but you can also easily find it out with a <<baremetal-tests,baremetal test dry run>>:
+
+....
+./test-executables --arch aarch64 --dry-run --mode baremetal
+....
+
+For example, we can run the C hello world link:userland/c/hello.c[] simply as:
+
+....
+./run --arch aarch64 --baremetal userland/c/hello.c
+....
+
+and that outputs to the serial port the string:
+
+....
+hello
+....
+
+which QEMU shows on the host terminal.
+
+To modify a baremetal program, simply edit the file, e.g.
+
+....
+vim userland/c/hello.c
+....
+
+and rebuild:
+
+....
+./build-baremetal --arch aarch64
+./run --arch aarch64 --baremetal userland/c/hello.c
+....
+
+`./build qemu-baremetal` that we run previously is only needed for the initial build. That script calls link:build-baremetal[] for us, in addition to building prerequisites such as QEMU and crosstool-NG.
+
+`./build-baremetal` uses crosstool-NG, and so it must be preceded by link:build-crosstool-ng[], which `./build qemu-baremetal` also calls.
+
+Now let's run link:userland/arch/aarch64/add.S[]:
+
+....
+./run --arch aarch64 --baremetal userland/arch/aarch64/add.S
+....
+
+This time, the terminal does not print anything, which indicates success: if you look into the source, you will see that we just have an assertion there.
+
+You can see a sample assertion fail in link:userland/c/assert_fail.c[]:
+
+....
+./run --arch aarch64 --baremetal userland/c/assert_fail.c
+....
+
+and the terminal contains:
+
+....
+lkmc_exit_status_134
+error: simulation error detected by parsing logs
+....
+
+and the exit status of our script is 1:
+
+....
+echo $?
+....
+
+You can run all the baremetal examples in one go and check that all assertions passed with:
+
+....
+./test-executables --arch aarch64 --mode baremetal
+....
+
+To use gem5 instead of QEMU do:
+
+....
+./build --download-dependencies gem5-baremetal
+./run --arch aarch64 --baremetal userland/c/hello.c --emulator gem5
+....
+
+and then <<qemu-buildroot-setup,as usual>> open a shell with:
+
+....
+./gem5-shell
+....
+
+Or as usual, <<tmux>> users can do both in one go with:
+
+....
+./run --arch aarch64 --baremetal userland/c/hello.c --emulator gem5 --tmux
+....
+
+TODO: the carriage returns are a bit different than in QEMU, see: xref:gem5-baremetal-carriage-return[xrefstyle=full].
+
+Note that `./build-baremetal` requires the `--emulator gem5` option, and generates separate executable images for both, as can be seen from:
+
+....
+echo "$(./getvar --arch aarch64 --baremetal userland/c/hello.c --emulator qemu image)"
+echo "$(./getvar --arch aarch64 --baremetal userland/c/hello.c --emulator gem5 image)"
+....
+
+This is unlike the Linux kernel that has a single image for both QEMU and gem5:
+
+....
+echo "$(./getvar --arch aarch64 --emulator qemu image)"
+echo "$(./getvar --arch aarch64 --emulator gem5 image)"
+....
+
+The reason for that is that on baremetal we don't parse the <<device-tree,device tress>> from memory like the Linux kernel does, which tells the kernel for example the UART address, and many other system parameters.
+
+`gem5` also supports the `RealViewPBX` machine, which represents an older hardware compared to the default `VExpress_GEM5_V1`:
+
+....
+./build-baremetal --arch aarch64 --emulator gem5 --machine RealViewPBX
+./run --arch aarch64 --baremetal userland/c/hello.c --emulator gem5 --machine RealViewPBX
+....
+
+This generates yet new separate images with new magic constants:
+
+....
+echo "$(./getvar --arch aarch64 --baremetal userland/c/hello.c --emulator gem5 --machine VExpress_GEM5_V1 image)"
+echo "$(./getvar --arch aarch64 --baremetal userland/c/hello.c --emulator gem5 --machine RealViewPBX      image)"
+....
+
+But just stick to newer and better `VExpress_GEM5_V1` unless you have a good reason to use `RealViewPBX`.
+
+When doing baremetal programming, it is likely that you will want to learn userland assembly first, see: xref:userland-assembly[xrefstyle=full].
+
+For more information on baremetal, see the section: xref:baremetal[xrefstyle=full].
+
+The following subjects are particularly important:
+
+* <<tracing>>
+* <<baremetal-gdb-step-debug>>
+
+=== Build the documentation
+
+You don't need to depend on GitHub.
+
+For a quick and dirty build, install https://asciidoctor.org/[Asciidoctor] however you like and build:
+
+....
+asciidoctor README.adoc
+xdg-open README.html
+....
+
+For development, you will want to do a more controlled build with extra error checking as follows.
+
+For the initial build do:
+
+....
+./build --download-dependencies docs
+....
+
+which also downloads build dependencies.
+
+Then the following times just to the faster:
+
+....
+./build-doc
+....
+
+Source: link:build-doc[]
+
+The HTML output is located at:
+
+....
+xdg-open out/README.html
+....
+
+More information about our documentation internals can be found at: xref:documentation[xrefstyle=full]
+
+[[gdb]]

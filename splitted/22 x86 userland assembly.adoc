@@ -1,0 +1,749 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== x86 userland assembly
+
+Arch agnostic infrastructure getting started at: xref:userland-assembly[xrefstyle=full].
+
+=== x86 registers
+
+link:userland/arch/x86_64/registers.S
+
+....
+|-----------------------------------------------|
+|  7  |  6  |  5  |  4  |  3  |  2  |  1  |  0  |
+|-----------------------------------------------|
+|                       |           | AH  | AL  |
+|-----------------------------------------------|
+|                       |           |    AX     |
+|-----------------------------------------------|
+|                       |          EAX          |
+|-----------------------------------------------|
+|                      RAX                      |
+|-----------------------------------------------|
+....
+
+For the newer x86_64 registers, the naming convention is somewhat saner:
+
+....
+|-----------------------------------------------|
+|  7  |  6  |  5  |  4  |  3  |  2  |  1  |  0  |
+|-----------------------------------------------|
+|                       |           |R12H |R12L |
+|-----------------------------------------------|
+|                       |           |    R12W   |
+|-----------------------------------------------|
+|                       |          R12D         |
+|-----------------------------------------------|
+|                      R12                      |
+|-----------------------------------------------|
+....
+
+Most of the 8 older x86 general purpose registers are not "really" general purpose in the sense that a few instructions magically use them without an explicit encoding. This is reflected in their names:
+
+* RAX: Accumulator. The general place where you add, subtract and otherwise manipulate results in-place. Magic for example for <<x86-binary-arithmetic-instructions,MUL>>.
+* RCX, RSI, RDI: Counter, Source and Destination. Used in <<x86-string-instructions>>
+
+==== x86 FLAGS registers
+
+https://en.wikipedia.org/wiki/FLAGS_register
+
+TODO: add some more info here. Just need a link placeholder for now.
+
+=== x86 addressing modes
+
+Example: link:userland/arch/x86_64/address_modes.S[]
+
+Several x86 instructions can calculate addresses of a complex form:
+
+....
+s:a(b, c, d)
+....
+
+which expands to:
+
+....
+a + b + c * d
+....
+
+Where the instruction encoding allows for:
+
+* `a`: any 8 or 32-bit general purpose register
+* `b`: any 32-bit general purpose register except ESP
+* `c`: 1, 2, 4 or 8 (encoded in 2 SIB bits)
+* `d`: immediate constant
+* `s`: a segment register. Cannot be tested simply from userland, so we won't talk about them here. See: https://github.com/cirosantilli/x86-bare-metal-examples/blob/6606a2647d44bc14e6fd695c0ea2b6b7a5f04ca3/segment_registers_real_mode.S
+
+The common compiler usage is:
+
+* `a`: base pointer
+* `b`: array offset
+* `c` and `d`: struct offset
+
+Bibliography:
+
+* <<intel-manual-1>> 3.7.5 "Specifying an Offset"
+* https://sourceware.org/binutils/docs-2.18/as/i386_002dMemory.html
+
+=== x86 data transfer instructions
+
+5.1.1 "Data Transfer Instructions"
+
+* link:userland/arch/x86_64/lea.S[]: LEA
+* Integer typecasts
+** link:userland/arch/x86_64/movzx.S[]: MOVZX
+** link:userland/arch/x86_64/movsx.S[]: MOVSX
+* link:userland/arch/x86_64/bswap.S[]: BSWAP: convert between little endian and big endian
+* link:userland/arch/x86_64/pushf.S[] PUSHF: <<x86-push-and-pop-instructions,push and pop>> the <<x86-flags-registers>> to / from the stack
+
+==== x86 exchange instructions
+
+<<intel-manual-1>> 7.3.1.2 "Exchange Instructions":
+
+* link:userland/arch/x86_64/xadd.S[] XADD: exchange and add. This is how C++ `<atomic>`'s' `++` is implemented in GCC 5.1. TODO: why is the exchange part needed?
+* link:userland/arch/x86_64/xchg.S[] XCHG: exchange two values
+
+TODO: concrete multi-thread <<gcc-inline-assembly>> examples of how all those instructions are normally used as synchronization primitives.
+
+===== x86 CMPXCHG instruction
+
+link:userland/arch/x86_64/cmpxchg.S[]
+
+CMPXCHG: compare and exchange. `cmpxchg a, b` does:
+
+....
+if (RAX == b) {
+    ZF = 1
+    b = a
+} else {
+    ZF = 0
+    RAX = b
+}
+....
+
+TODO application: https://stackoverflow.com/questions/6935442/x86-spinlock-using-cmpxchg
+
+==== x86 PUSH and POP instructions
+
+link:userland/arch/x86_64/push.S[]
+
+`push %rax` is basically equivalent to:
+
+....
+sub $8, %rsp
+mov %rax, (%rsp)
+....
+
+and `pop %rax`:
+
+....
+mov (%rsp), %rax
+add $8, %rsp
+....
+
+Why do those instructions exist at all vs MOV / ADD / SUB: https://stackoverflow.com/questions/4584089/what-is-the-function-of-push-pop-registers-in-x86-assembly/33583134#33583134
+
+==== x86 CQTO and CLTQ instructions
+
+Examples:
+
+* link:userland/arch/x86_64/cqto.S[] CQTO
+* link:userland/arch/x86_64/cltq.S[] CLTQ
+
+Instructions without E suffix: sign extend RAX into RDX:RAX.
+
+Instructions E suffix: sign extend withing RAX itself.
+
+Common combo with IDIV 32-bit, which takes the input from EDX:EAX: so you need to set up EDX before calling it.
+
+Has some Intel vs AT&T name overload hell:
+
+* https://stackoverflow.com/questions/6555094/what-does-cltq-do-in-assembly/45386217#45386217
+* https://stackoverflow.com/questions/17170388/trying-to-understand-the-assembly-instruction-cltd-on-x86/50315201#50315201
+* https://sourceware.org/binutils/docs/as/i386_002dMnemonics.html
+
+GNU GAS accepts both syntaxes, see: xref:table-cqto-cltq[xrefstyle=full].
+
+[[table-cqto-cltq]]
+.CQTO and CLTQ family Intel vs AT&T
+[options="header", cols="3*<"]
+|===
+|Intel |AT&T |From |To
+
+|CBW
+|CBTW
+|AL
+|AX
+
+|CWDE
+|CWTL
+|AX
+|EAX
+
+|CWD
+|CWTD
+|AX
+|DX:AX
+
+|CDQ
+|CLTD
+|EAX
+|EDX:EAX
+
+|CDQE
+|CLTQ
+|EAX
+|RAX
+
+|CQO
+|CQTO
+|RAX
+|RDX:RAX
+
+|===
+
+==== x86 CMOVcc instructions
+
+* link:userland/arch/x86_64/cmovcc.S[]: CMOVcc
+
+mov if a condition is met:
+
+....
+CMOVcc a, b
+....
+
+Equals:
+
+....
+if(flag) a = b
+....
+
+where `cc` are the same flags as Jcc.
+
+Vs jmp:
+
+* https://stackoverflow.com/questions/14131096/why-is-a-conditional-move-not-vulnerable-for-branch-prediction-failure
+* https://stackoverflow.com/questions/27136961/what-is-it-about-cmov-which-improves-cpu-pipeline-performance
+* https://stackoverflow.com/questions/26154488/difference-between-conditional-instructions-cmov-and-jump-instructions
+* https://stackoverflow.com/questions/6754454/speed-difference-between-if-else-and-ternary-operator-in-c?lq=1#comment8007791_6754495
+
+Not necessarily faster because of branch prediction.
+
+This is partly why the ternary `?` C operator exists: https://stackoverflow.com/questions/3565368/ternary-operator-vs-if-else
+
+It is interesting to compare this with ARMv7 conditional execution: which is available for all instructions, as shown at: xref:arm-conditional-execution[xrefstyle=full].
+
+=== x86 binary arithmetic instructions
+
+<<intel-manual-1>> 5.1.2 "Binary Arithmetic Instructions":
+
+* link:userland/arch/x86_64/add.S[]: ADD
+** link:userland/arch/x86_64/inc.S[]: INC
+** link:userland/arch/x86_64/adc.S[]: ADC
+* link:userland/arch/x86_64/sub.S[]: SUB
+** link:userland/arch/x86_64/dec.S[]: DEC
+** link:userland/arch/x86_64/sbb.S[]: SBB
+* link:userland/arch/x86_64/mul.S[]: MUL
+** link:userland/arch/x86_64/neg.S[]: NEG
+** link:userland/arch/x86_64/imul.S[]: IMUL
+* link:userland/arch/x86_64/div.S[]: DIV
+** link:userland/arch/x86_64/div_overflow.S[]: DIV overflow
+** link:userland/arch/x86_64/div_zero.S[]: DIV zero
+** link:userland/arch/x86_64/idiv.S[]: IDIV
+* link:userland/arch/x86_64/cmp.S[]: CMP
+
+=== x86 logical instructions
+
+<<intel-manual-1>> 5.1.4 "Logical Instructions"
+
+* link:userland/arch/x86_64/and.S[]: AND
+* link:userland/arch/x86_64/not.S[]: NOT
+* link:userland/arch/x86_64/or.S[]: OR
+* link:userland/arch/x86_64/xor.S[]: XOR
+
+=== x86 shift and rotate instructions
+
+<<intel-manual-1>> 5.1.5 "Shift and Rotate Instructions"
+
+* link:userland/arch/x86_64/shl.S[SHL and SHR]
++
+SHift left or Right and insert 0.
++
+CF == the bit that got shifted out.
++
+Application: quick unsigned multiply and divide by powers of 2.
+* link:userland/arch/x86_64/sal.S[SAL and SAR]
++
+Application: signed multiply and divide by powers of 2.
++
+Mnemonics: Shift Arithmetic Left and Right
++
+Keeps the same sign on right shift.
++
+Not directly exposed in C, for which signed shift is undetermined behavior, but does exist in Java via the `>>>` operator. C compilers can omit it however.
++
+SHL and SAL are exactly the same and have the same encoding: https://stackoverflow.com/questions/8373415/difference-between-shl-and-sal-in-80x86/56621271#56621271
+* link:userland/arch/x86_64/rol.S[]: ROL and ROR
++
+Rotates the bit that is going out around to the other side.
+* link:userland/arch/x86_64/rol.S[]: RCL and RCR
++
+Like ROL and ROR, but insert the carry bit instead, which effectively generates a rotation of 8 + 1 bits. TODO application.
+
+=== x86 bit and byte instructions
+
+<<intel-manual-1>> 5.1.6 "Bit and Byte Instructions"
+
+* link:userland/arch/x86_64/bt.S[]: BT
++
+Bit test: test if the Nth bit a bit of a register is set and store the result in the CF FLAG.
++
+....
+CF = reg[N]
+....
+* link:userland/arch/x86_64/btr.S[]: BTR
++
+Do a BT and then set the bit to 0.
+* link:userland/arch/x86_64/btc.S[]: BTC
++
+Do a BT and then swap the value of the tested bit.
+* link:userland/arch/x86_64/setcc.S[]: SETcc
++
+Set a byte of a register to 0 or 1 depending on the cc condition.
++
+Bibliography: https://stackoverflow.com/questions/1406783/how-to-read-and-write-x86-flags-registers-directly/30952577#30952577
+* link:userland/arch/x86_64/popcnt.S[]: POPCNT
++
+Count the number of 1 bits.
+* link:userland/arch/x86_64/test.S[]: TEST
++
+Like <<x86-binary-arithmetic-instructions,CMP>> but does AND instead of SUB:
++
+....
+ZF = (!(X && Y)) ? 1 : 0
+....
+
+=== x86 control transfer instructions
+
+<<intel-manual-1>> 5.1.7 "Control Transfer Instructions"
+
+* link:userland/arch/x86_64/jmp.S[]: JMP
+** link:userland/arch/x86_64/jmp_indirect.S[]: JMP indirect
+
+==== x86 Jcc instructions
+
+link:userland/arch/x86_64/jcc.S[]
+
+Jump if certain conditions of the flags register are met.
+
+Jcc includes the instructions:
+
+* JZ, JNZ
+** JE, JNE: same as JZ, with two separate manual entries that say almost the same thing, lol: https://stackoverflow.com/questions/14267081/difference-between-je-jne-and-jz-jnz/14267662#14267662
+* JG: greater than, signed
+** JA: Above: greater than, unsigned
+* JL: less than, signed
+** JB below: less than, unsigned
+* JC: carry
+* JO: overflow
+* JP: parity. Why it exists: https://stackoverflow.com/questions/25707130/what-is-the-purpose-of-the-parity-flag-on-a-cpu
+* JPE: parity even
+* JPO: parity odd
+
+JG vs JA and JL vs JB:
+
+* https://stackoverflow.com/questions/9617877/assembly-jg-jnle-jl-jnge-after-cmp/56613928#56613928
+* https://stackoverflow.com/questions/20906639/difference-between-ja-and-jg-in-assembly
+
+==== x86 LOOP instruction
+
+link:userland/arch/x86_64/loop.S[]
+
+Vs <<x86-jcc-instructions,Jcc>>: https://stackoverflow.com/questions/6805692/x86-assembly-programming-loops-with-ecx-and-loop-instruction-versus-jmp-jcond Holy CISC!
+
+==== x86 string instructions
+
+<<intel-manual-1>> 5.1.8 "String Instructions"
+
+These instructions do some operation on an array item, and automatically update the index to the next item:
+
+* First example explained in more detail
+** link:userland/arch/x86_64/stos.S[]: STOS: STOre String: store register to memory. STOSD is called STOSL in GNU GAS as usual: https://stackoverflow.com/questions/6211629/gcc-inline-assembly-error-no-such-instruction-stosd
+* Further examples
+** link:userland/arch/x86_64/cmps.S[]: CMPS: CoMPare Strings: compare two values in memory with addresses given by RSI and RDI. Could be used to implement `memcmp`. Store the result in JZ as usual.
+** link:userland/arch/x86_64/lods.S[]: LODS: LOaD String: load from memory to register.
+** link:userland/arch/x86_64/movs.S[]: MOVS: MOV String: move from one memory to another with addresses given by RSI and RDI. Could be used to implement `memmov`.
+** link:userland/arch/x86_64/scas.S[]: SCAS: SCan String: compare memory to the value in a register. Could be used to implement `strchr`.
+
+The RSI and RDI registers are actually named after these intructions! S is the source of string instructions, D is the destination of string instructions: https://stackoverflow.com/questions/1856320/purpose-of-esi-edi-registers
+
+The direction of the index increment depends on the direction flag of the FLAGS register: 0 means forward and 1 means backward: https://stackoverflow.com/questions/9636691/what-are-cld-and-std-for-in-x86-assembly-language-what-does-df-do
+
+These instructions were originally developed to speed up "string" operations such as those present in the `<string.h>` header of the C standard library.
+
+However, as computer architecture evolved, those instructions might not offer considerable speedups anymore, and modern glibc such as 2.29 just uses <<x86-simd>> operations instead:, see also: https://stackoverflow.com/questions/33480999/how-can-the-rep-stosb-instruction-execute-faster-than-the-equivalent-loop
+
+===== x86 REP prefix
+
+Example: link:userland/arch/x86_64/rep.S[]
+
+Repeat a string instruction RCX times:
+
+As the repetitions happen:
+
+* RCX decreases, until it reaches 0
+* RDI and RSI increase
+
+The variants: REPZ, REPNZ (alias REPE, REPNE) repeat a given instruction until something happens.
+
+REP and REPZ also additionally stop if the comparison operation they repeat fails.
+
+* REP: INS, OUTS, MOVS, LODS, and STOS
+* REPZ: CMPS and SCAS
+
+==== x86 ENTER and LEAVE instructions
+
+link:userland/arch/x86_64/enter.S[]
+
+These instructions were designed to allocate and deallocate function stack frames in the prologue and epilogue: https://stackoverflow.com/questions/5959890/enter-vs-push-ebp-mov-ebp-esp-sub-esp-imm-and-leave-vs-mov-esp-ebp
+
+ENTER appears obsolete and is kept mostly for backwards compatibility. LEAVE is still emitted by some compilers.
+
+ENTER A, B is basically equivalent to:
+
+....
+push %rbp
+mov %rsp, %rbp
+sub %rsp, A
+....
+
+which implies an allocation of:
+
+* one dword to remember EBP
+* A bytes for local function variables
+
+I didn't have the patience to study the B parameter, and it does not seem to be used often: https://stackoverflow.com/questions/26323215/do-any-languages-compilers-utilize-the-x86-enter-instruction-with-a-nonzero-ne
+
+LEAVE is equivalent to:
+
+....
+mov %rbp, %rsp
+pop %rbp
+....
+
+which restores RSP and RBP to the values they had before the prologue.
+
+=== x86 miscellaneous instructions
+
+<<intel-manual-1>> 5.1.13 "Miscellaneous Instructions"
+
+NOP: xref:nop-instructions[xrefstyle=full]
+
+=== x86 random number generator instructions
+
+<<intel-manual-1>> 5.1.15 Random Number Generator Instructions
+
+Example: link:userland/arch/x86_64/rdrand.S[]: RDRAND
+
+If you run that executable multiple times, it prints a random number every time to stdout.
+
+RDRAND is a true random number generator!
+
+This Intel engineer says its based on quantum effects: https://stackoverflow.com/questions/17616960/true-random-numbers-with-c11-and-rdrand/18004959#18004959
+
+Generated some polemic when kernel devs wanted to use it as part of `/dev/random`, because it could be used as a cryptographic backdoor by Intel since it is a black box.
+
+RDRAND sets the carry flag when data is ready so we must loop if the carry flag isn't set.
+
+==== x86 CPUID instruction
+
+Example: link:userland/arch/x86_64/cpuid.S[]
+
+Fills EAX, EBX, ECX and EDX with CPU information.
+
+The exact data to show depends on the value of EAX, and for a few cases instructions ECX. When it depends on ECX, it is called a sub-leaf. Out test program prints `eax == 0`.
+
+On <<p51>> for example the output EAX, EBX, ECX and EDX are:
+
+....
+0x00000016
+0x756E6547
+0x6C65746E
+0x49656E69
+....
+
+EBX and ECX are easy to interpret:
+
+* EBX: 75 6e 65 47 == 'u', 'n', 'e', 'G' in ASCII
+* ECX: 6C 65 74 6E == 'l', 'e', 't', 'n'
+
+so we see the string `Genu ntel` which is a shorthand for "Genuine Intel". Ha, I wonder if they had serious CPU pirating problems in the past? :-)
+
+Information available includes:
+
+* vendor
+* version
+* features (mmx, simd, rdrand, etc.) <http://en.wikipedia.org/wiki/CPUID# EAX.3D1:_Processor_Info_and_Feature_Bits>
+* caches
+* tlbs http://en.wikipedia.org/wiki/Translation_lookaside_buffer
+
+The cool thing about this instruction is that it allows you to check the CPU specs and take alternative actions based on that inside your program.
+
+On Linux, the capacity part of this information is parsed and made available at `cat /proc/cpuinfo`. See: http://unix.stackexchange.com/questions/43539/what-do-the-flags-in-proc-cpuinfo-mean
+
+There is also the `cpuinfo` command line tool that parses the CPUID instruction from the command line. Source: http://www.etallen.com/cpuid.html
+
+=== x86 x87 FPU instructions
+
+<<intel-manual-1>> 5.2 "X87 FPU INSTRUCTIONS"
+
+Old floating point unit that you should likely not use anymore, prefer instead the newer <<x86-simd>> instructions.
+
+* FPU basic examples, start here
+** link:userland/arch/x86_64/fadd.S[] FADD. The x76 FPU works on a stack of floating point numbers.
+** link:userland/arch/x86_64/faddp.S[] FADDP. Instructions with the P suffix also Pop the stack. This is often what you want for most computations, where the intermediate results don't matter.
+** link:userland/arch/x86_64/fldl_literal.S[] FLDL literal. It does not seem possible to either https://stackoverflow.com/questions/6514537/how-do-i-specify-immediate-floating-point-numbers-with-inline-assembly
+*** load floating point immediates into x86 x87 FPU registers
+*** encode floating point literals in x86 instructions, including MOV
+* Bulk instructions
+** link:userland/arch/x86_64/fabs.S[] FABS: absolute value: `ST0 = |ST0|`
+** link:userland/arch/x86_64/fchs.S[] FCHS: change sign: `ST0 = -ST0`
+** link:userland/arch/x86_64/fild.S[] FILD: Integer Load. Convert integer to float.
+** link:userland/arch/x86_64/fld1.S[] FLD1: Push 1.0 to ST0. CISC!
+** link:userland/arch/x86_64/fldz.S[] FLDZ: Push 0.0 to ST0.
+** link:userland/arch/x86_64/fscale.S[] FSCALE: `ST0 = ST0 * 2 ^ RoundTowardZero(ST1)`
+** link:userland/arch/x86_64/fsqrt.S[] FSQRT: square root
+** link:userland/arch/x86_64/fxch.S[] FXCH: swap ST0 and another register
+
+The ST0-ST7 x87 FPU registers are actually 80-bits wide, this can be seen from GDB with:
+
+....
+i r st0 st1
+....
+
+By counting the number of hex digits, we have 20 digits instead of 16!
+
+Instructions such as FLDL convert standard <<ieee-754>> 64-bit values from memory into this custom 80-bit format.
+
+* https://stackoverflow.com/questions/3206101/extended-80-bit-double-floating-point-in-x87-not-sse2-we-dont-miss-it
+* https://en.wikipedia.org/wiki/Extended_precision#x86_extended_precision_format
+
+==== x86 x87 FPU vs SIMD
+
+https://stackoverflow.com/questions/1844669/benefits-of-x87-over-sse
+
+Modern x86 has two main ways of doing floating point operations:
+
+* <<x86-x87-fpu-instructions>>
+* <<x86-simd>>
+
+Advantages of FPU:
+
+* present in old CPUs, while SSE2 is only required in x86-64
+* contains some instructions no present in SSE, e.g. trigonometric
+* higher precision: FPU holds 80 bit Intel extension, while SSE2 only does up to 64 bit operations despite having the 128-bit register
+
+In GCC, you can choose between them with `-mfpmath=`.
+
+=== x86 SIMD
+
+Parent section: xref:simd-assembly[xrefstyle=full]
+
+History:
+
+* https://en.wikipedia.org/wiki/MMX_(instruction_set)[MMX]: MultiMedia eXtension (unofficial name). 1997. MM0-MM7 64-bit registers.
+* https://en.wikipedia.org/wiki/Streaming_SIMD_Extensions[SSE]: Streaming SIMD Extensions. 1999. XMM0-XMM7 128-bit registers, XMM0-XMM15 for AMD in 64-bit mode.
+* https://en.wikipedia.org/wiki/SSE2[SSE2]: 2004
+* https://en.wikipedia.org/wiki/SSE3[SSE3]: 2006
+* https://en.wikipedia.org/wiki/SSE4[SSE4]: 2006
+* https://en.wikipedia.org/wiki/Advanced_Vector_Extensions[AVX]: Advanced Vector Extensions. 2011. YMM0–YMM15 256-bit registers in 64-bit mode. Extension of XMM.
+* AVX2:2013
+* AVX-512: 2016. 512-bit ZMM registers. Extension of YMM.
+
+==== x86 SSE instructions
+
+<<intel-manual-1>> 5.5 "SSE INSTRUCTIONS"
+
+===== x86 SSE data transfer instructions
+
+<<intel-manual-1>> 5.5.1.1 "SSE Data Transfer Instructions"
+
+* link:userland/arch/x86_64/movaps.S[]: MOVAPS: move 4 x 32-bits between two XMM registeres or XMM registers and 16-byte aligned memory
+* link:userland/arch/x86_64/movaps.S[]: MOVUPS: like MOVAPS but also works for unaligned memory
+* link:userland/arch/x86_64/movss.S[]: MOVSS: move 32-bits between two XMM registeres or XMM registers and memory
+
+===== x86 SSE packed arithmetic instructions
+
+<<intel-manual-1>> 5.5.1.2 "SSE Packed Arithmetic Instructions"
+
+* link:userland/arch/x86_64/addpd.S[]: ADDPS, ADDPD: good first instruction to learn <<simd-assembly>>.
+
+===== x86 SSE conversion instructions
+
+<<intel-manual-1>> 5.5.1.6 "SSE Conversion Instructions"
+
+==== x86 SSE2 instructions
+
+<<intel-manual-1>> 5.6 "SSE2 INSTRUCTIONS"
+
+* link:userland/arch/x86_64/cvttss2si.S[]: CVTTSS2SI: convert 32-bit floating point to 32-bit integer, store the result in a general purpose register. Round towards 0.
+
+===== x86 PADDQ instruction
+
+link:userland/arch/x86_64/paddq.S[]: PADDQ, PADDL, PADDW, PADDB
+
+Good first instruction to learn <<simd-assembly>>.
+
+[[x86-fma]]
+==== x86 fused multiply add (FMA)
+
+<<intel-manual-1>> 5.15 "FUSED-MULTIPLY-ADD (FMA)"
+
+* link:userland/arch/x86_64/vfmadd132pd.S[]: VFMADD132PD: "Multiply packed double-precision floating-point values from xmm1 and xmm3/mem, add to xmm2 and put result in xmm1." TODO: but I don't understand the manual, experimentally on <<p51>> Ubuntu 19.04 host the result is stored in XMM2!
+
+These instructions were not part of any SSEn set: they actually have a dedicated CPUID flag for it! It appears under `/proc/cpuinfo` as `fma`. They were introduced into AVX512F however.
+
+They are also unusual for x86 instructions in that they take 3 operands, as you would intuitively expect from the definition of FMA.
+
+=== x86 system instructions
+
+<<intel-manual-1>> 5.20 "SYSTEM INSTRUCTIONS"
+
+==== x86 RDTSC instruction
+
+Sources:
+
+* link:userland/arch/x86_64/rdtsc.S[]
+* link:userland/arch/x86_64/intrinsics/rdtsc.c[]
+
+Try running the programs multiple times, and watch the value increase, and then try to correlate it with `/proc/cpuinfo` frequency!
+
+....
+while true; do sleep 1 && ./userland/arch/x86_64/rdtsc.out; done
+....
+
+RDTSC stores its output to EDX:EAX, even in 64-bit mode, top bits are zeroed out.
+
+TODO: review this section, make a more controlled userland experiment with <<m5ops>> instrumentation.
+
+Let's have some fun and try to correlate the <<gem5-m5out-stats-txt-file>> `system.cpu.numCycles` cycle count with the https://en.wikipedia.org/wiki/Time_Stamp_Counter[x86 RDTSC instruction] that is supposed to do the same thing:
+
+....
+./build-userland --static userland/arch/x86_64/inline_asm/rdtsc.S
+./run --eval './arch/x86_64/rdtsc.out;m5 exit;' --emulator gem5
+./gem5-stat
+....
+
+RDTSC outputs a cycle count which we compare with gem5's `gem5-stat`:
+
+* `3828578153`: RDTSC
+* `3830832635`: `gem5-stat`
+
+which gives pretty close results, and serve as a nice sanity check that the cycle counter is coherent.
+
+It is also nice to see that RDTSC is a bit smaller than the `stats.txt` value, since the latter also includes the exec syscall for `m5`.
+
+Bibliography:
+
+* https://en.wikipedia.org/wiki/Time_Stamp_Counter
+* https://stackoverflow.com/questions/13772567/how-to-get-the-cpu-cycle-count-in-x86-64-from-c
+* https://stackoverflow.com/questions/9887839/clock-cycle-count-wth-gcc/9887979
+
+===== x86 RDTSCP instruction
+
+RDTSCP is like RDTSP, but it also stores the CPU ID into ECX: this is convenient because the value of RDTSC depends on which core we are currently on, so you often also want the core ID when you want the RDTSC.
+
+Sources:
+
+* link:userland/arch/x86_64/rdtscp.S[]
+* link:userland/arch/x86_64/intrinsics/rdtscp.c[]
+
+We can observe its operation with the good and old `taskset`, for example:
+
+....
+taskset -c 0 ./userland/arch/x86_64/rdtscp.out | tail -n 1
+taskset -c 1 ./userland/arch/x86_64/rdtscp.out | tail -n 1
+....
+
+produces:
+
+....
+0x00000000
+0x00000001
+....
+
+
+There is also the RDPID instruction that reads just the processor ID, but it appears to be very new for QEMU 4.0.0 or <<p51>>, as it fails with SIGILL on both.
+
+Bibliography: https://stackoverflow.com/questions/22310028/is-there-an-x86-instruction-to-tell-which-core-the-instruction-is-being-run-on/56622112#56622112
+
+===== ARM PMCCNTR register
+
+TODO We didn't manage to find a working ARM analogue to <<x86-rdtsc-instruction>>: link:kernel_modules/pmccntr.c[] is oopsing, and even it if weren't, it likely won't give the cycle count since boot since it needs to be activate before it starts counting anything:
+
+* https://stackoverflow.com/questions/40454157/is-there-an-equivalent-instruction-to-rdtsc-in-arm
+* https://stackoverflow.com/questions/31620375/arm-cortex-a7-returning-pmccntr-0-in-kernel-mode-and-illegal-instruction-in-u/31649809#31649809
+* https://blog.regehr.org/archives/794
+
+=== x86 thread synchronization primitives
+
+==== x86 LOCK prefix
+
+Inline assembly example at: link:userland/cpp/atomic.cpp[]
+
+Ensures that memory modifications are visible across all CPUs, which is fundamental for thread synchronization.
+
+Apparently already automatically implied by some of the <<x86-exchange-instructions>>
+
+Bibliography:
+
+* https://stackoverflow.com/questions/8891067/what-does-the-lock-instruction-mean-in-x86-assembly/56803909#56803909
+* https://stackoverflow.com/questions/980999/what-does-multicore-assembly-language-look-like/33651438#33651438
+
+=== x86 assembly bibliography
+
+==== x86 official bibliography
+
+[[intel-manual]]
+===== Intel 64 and IA-32 Architectures Software Developer's Manuals
+
+We are using the May 2019 version unless otherwise noted.
+
+There are a few download forms at: https://software.intel.com/en-us/articles/intel-sdm
+
+The single PDF one is useless however because it does not have a unified ToC nor inter Volume links, so I just download the 4-part one.
+
+The Volumes are well split, so it is usually easy to guess where you should look into.
+
+Also I can't find older versions on the website easily, so I just web archive everything.
+
+[[intel-manual-1]]
+====== Intel 64 and IA-32 Architectures Software Developer's Manuals Volume 1
+
+Userland basics: http://web.archive.org/web/20190606075544/https://software.intel.com/sites/default/files/managed/a4/60/253665-sdm-vol-1.pdf
+
+[[intel-manual-2]]
+====== Intel 64 and IA-32 Architectures Software Developer's Manuals Volume 2
+
+Instruction list: http://web.archive.org/web/20190606075330/https://software.intel.com/sites/default/files/managed/a4/60/325383-sdm-vol-2abcd.pdf
+
+[[intel-manual-3]]
+====== Intel 64 and IA-32 Architectures Software Developer's Manuals Volume 3
+
+Kernel land: http://web.archive.org/web/20190606075534/https://software.intel.com/sites/default/files/managed/a4/60/325384-sdm-vol-3abcd.pdf
+
+[[intel-manual-4]]
+====== Intel 64 and IA-32 Architectures Software Developer's Manuals Volume 4
+
+Model specific extensions: http://web.archive.org/web/20190606075325/https://software.intel.com/sites/default/files/managed/22/0d/335592-sdm-vol-4.pdf
+

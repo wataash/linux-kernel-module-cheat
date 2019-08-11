@@ -1,0 +1,1214 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Baremetal
+
+Getting started at: xref:baremetal-setup[xrefstyle=full]
+
+=== Baremetal GDB step debug
+
+GDB step debug works on baremetal exactly as it does on the Linux kernel, which is described at: xref:gdb[xrefstyle=full].
+
+Except that is is even cooler here since we can easily control and understand every single instruction that is being run!
+
+For example, on the first shell:
+
+....
+./run --arch arm --baremetal userland/c/hello.c --gdb-wait
+....
+
+then on the second shell:
+
+....
+./run-gdb --arch arm --baremetal userland/c/hello.c -- main
+....
+
+Or if you are a <<tmux,tmux pro>>, do everything in one go with:
+
+....
+./run --arch arm --baremetal userland/c/hello.c --gdb
+....
+
+Alternatively, to start from the very first executed instruction of our tiny <<baremetal-bootloaders>>:
+
+....
+./run \
+  --arch arm \
+  --baremetal userland/c/hello.c \
+  --gdb-wait \
+  --tmux-args=--no-continue \
+;
+....
+
+Now you can just `stepi` to when jumping into main to go to the C code in link:userland/c/hello.c[].
+
+This is specially interesting for the executables that don't use the bootloader from under `baremetal/arch/<arch>/no_bootloader/*.S`, e.g.:
+
+....
+./run \
+  --arch arm \
+  --baremetal baremetal/arch/arm/no_bootloader/semihost_exit.S \
+  --gdb-wait \
+  --tmux-args=--no-continue \
+;
+....
+
+The cool thing about those examples is that you start at the very first instruction of your program, which gives more control.
+
+Examples without bootloader are somewhat analogous to user mode <<freestanding-programs>>.
+
+=== Baremetal bootloaders
+
+As can be seen from <<baremetal-gdb-step-debug>>, all examples under link:baremetal/[], with the exception of `baremetal/arch/<arch>/no_bootloader`, start from our tiny bootloaders:
+
+* link:baremetal/lib/arm.S[]
+* link:baremetal/lib/aarch64.S[]
+
+Out simplistic bootloaders basically setup up just enough system state to allow calling:
+
+* C functions such as `exit` from the assembly examples
+* the `main` of C examples itself
+
+The most important things that we setup in the bootloaders are:
+
+* the stack pointer
+* NEON: xref:aarch64-baremetal-neon-setup[xrefstyle=full]
+* TODO: we don't do this currently but maybe we should setup BSS
+
+The C functions that become available as a result are:
+
+* Newlib functions implemented at link:baremetal/lib/syscalls.c[]
+* `lkmc_` non-Newlib functions implemented at link:lkmc.c[]
+
+It is not possible to call those C functions from the examples that don't use a bootloader.
+
+For this reason, we tend to create examples with bootloaders, as it is easier to write them portably.
+
+=== Semihosting
+
+Semihosting is a publicly documented interface specified by ARM Holdings that allows us to do some magic operations very useful in development.
+
+Semihosting is implemented both on some real devices and on simulators such as QEMU and <<gem5-semihosting>>.
+
+It is documented at: https://developer.arm.com/docs/100863/latest/introduction
+
+For example, the following code makes QEMU exit:
+
+....
+./run --arch arm --baremetal baremetal/arch/arm/semihost_exit.S
+....
+
+Source: link:baremetal/arch/arm/no_bootloader/semihost_exit.S[]
+
+That program program contains the code:
+
+....
+mov r0, #0x18
+ldr r1, =#0x20026
+svc 0x00123456
+....
+
+and we can see from the docs that `0x18` stands for the `SYS_EXIT` command.
+
+This is also how we implement the `exit(0)` system call in C for QEMU, which is used for example at link:userland/c/exit0.c[] through the Newlib via the `_exit` function at link:baremetal/lib/syscalls.c[].
+
+Other magic operations we can do with semihosting besides exiting the on the host include:
+
+* read and write to host stdin and stdout
+* read and write to host files
+
+Alternatives exist for some semihosting operations, e.g.:
+
+* UART IO for host stdin and stdout in both emulators and real hardware
+* <<m5ops>> for <<gem5>>, e.g. `m5 exit` makes the emulator quit
+
+The big advantage of semihosting is that it is standardized across all ARM boards, and therefore allows you to make a single image that does those magic operations instead of having to compile multiple images with different magic addresses.
+
+The downside of semihosting is that it is ARM specific. TODO is it an open standard that other vendors can implement?
+
+In QEMU, we enable semihosting with:
+
+....
+-semihosting
+....
+
+Newlib 9c84bfd47922aad4881f80243320422b621c95dc already has a semi-hosting implementation at:
+
+....
+newlib/libc/sys/arm/syscalls.c
+....
+
+TODO: how to use it? Possible through crosstool-NG? In the worst case we could just copy it.
+
+Bibliography:
+
+* https://stackoverflow.com/questions/31990487/how-to-cleanly-exit-qemu-after-executing-bare-metal-program-without-user-interve/40957928#40957928
+* https://balau82.wordpress.com/2010/11/04/qemu-arm-semihosting/
+
+==== gem5 semihosting
+
+For gem5, you need:
+
+....
+patch -d "$(./getvar gem5_source_dir)" -p 1 < patches/manual/gem5-semihost.patch
+....
+
+https://stackoverflow.com/questions/52475268/how-to-enable-arm-semihosting-in-gem5/52475269#52475269
+
+=== gem5 baremetal carriage return
+
+TODO: our example is printing newlines without automatic carriage return `\r` as in:
+
+....
+enter a character
+                 got: a
+....
+
+We use `m5term` by default, and if we try `telnet` instead:
+
+....
+telnet localhost 3456
+....
+
+it does add the carriage returns automatically.
+
+=== Baremetal host packaged toolchain
+
+For `arm`, some baremetal examples compile fine with:
+
+....
+sudo apt-get install gcc-arm-none-eabi qemu-system-arm
+./build-baremetal --arch arm --gcc-which host-baremetal
+./run --arch arm --baremetal userland/c/hello.c --qemu-which host
+....
+
+However, there are as usual limitations to using prebuilts:
+
+* certain examples fail to build with the Ubuntu packaged toolchain. E.g.: link:userland/c/exit0.c[] fails with:
++
+....
+/usr/lib/gcc/arm-none-eabi/6.3.1/../../../arm-none-eabi/lib/libg.a(lib_a-fini.o): In function `__libc_fini_array':
+/build/newlib-8gJlYR/newlib-2.4.0.20160527/build/arm-none-eabi/newlib/libc/misc/../../../../../newlib/libc/misc/fini.c:33: undefined reference to `_fini'
+collect2: error: ld returned 1 exit status
+....
++
+with the prebuilt toolchain, and I'm lazy to debug.
+* there seems to to be no analogous `aarch64` Ubuntu package to `gcc-arm-none-eabi`: https://askubuntu.com/questions/1049249/is-there-a-package-with-the-aarch64-version-of-gcc-arm-none-eabi-for-bare-metal
+
+[[baremetal-cpp]]
+=== Baremetal C++
+
+TODO not working as of 8825222579767f2ee7e46ffd8204b9e509440759 + 1. Not yet properly researched / reported upstream yet.
+
+Should not be hard in theory since `libstdc++` is just part of GCC, as shown at: https://stackoverflow.com/questions/21872229/how-to-edit-and-re-build-the-gcc-libstdc-c-standard-library-source/51946224#51946224
+
+To test it out, I first hack link:common.py[] to enable `C++`:
+
+....
+consts['baremetal_build_in_exts'] = consts['build_in_exts']
+....
+
+and then I hack link:userland/arch/aarch64/inline_asm/multiline.cpp[] to consist only of an empty main:
+
+....
+int main() {}
+....
+
+then for example:
+
+....
+./build-baremetal --arch aarch64
+./run --arch aarch64 --baremetal userland/arch/aarch64/inline_asm/multiline.cpp
+....
+
+fails with:
+
+....
+rom: requested regions overlap (rom dtb. free=0x00000000000000a0, addr=0x0000000000000000)
+qemu-system-aarch64: rom check and register reset failed
+....
+
+and the gem5 build fails completely:
+
+....
+./build-baremetal --arch aarch64 --emulator gem5 userland/arch/aarch64/inline_asm/multiline.cpp
+....
+
+fails with:
+
+....
+/tmp/ccFd2YIB.o:(.eh_frame+0x1c): relocation truncated to fit: R_AARCH64_PREL32 against `.text'
+collect2: error: ld returned 1 exit status
+....
+
+=== GDB builtin CPU simulator
+
+It is incredible, but GDB also has a CPU simulator inside of it as documented at: https://sourceware.org/gdb/onlinedocs/gdb/Target-Commands.html
+
+TODO: any advantage over QEMU? I doubt it, mostly using it as as toy for now:
+
+Without running `./run`, do directly:
+
+....
+./run-gdb --arch arm --baremetal userland/c/hello.c --sim
+....
+
+Then inside GDB:
+
+....
+load
+starti
+....
+
+and now you can debug normally.
+
+Enabled with the crosstool-NG configuration:
+
+....
+CT_GDB_CROSS_SIM=y
+....
+
+which by grepping crosstool-NG we can see does on GDB:
+
+....
+./configure --enable-sim
+....
+
+Those are not set by default on `gdb-multiarch` in Ubuntu 16.04.
+
+Bibliography:
+
+* https://stackoverflow.com/questions/49470659/arm-none-eabi-gdb-undefined-target-command-sim
+* http://cs107e.github.io/guides/gdb/
+
+==== GDB builtin CPU simulator userland
+
+Since I had this compiled, I also decided to try it out on userland.
+
+I was also able to run a freestanding Linux userland example on it: https://github.com/cirosantilli/arm-assembly-cheat/blob/cd232dcaf32c0ba6399b407e0b143d19b6ec15f4/v7/linux/hello.S
+
+It just ignores the <<arm-svc-instruction>> however, and does not forward syscalls to the host like QEMU does.
+
+Then I tried a glibc example: https://github.com/cirosantilli/arm-assembly-cheat/blob/cd232dcaf32c0ba6399b407e0b143d19b6ec15f4/v7/mov.S
+
+First it wouldn't break, so I added `-static` to the `Makefile`, and then it started failing with:
+
+....
+Unhandled v6 thumb insn
+....
+
+Doing:
+
+....
+help architecture
+....
+
+shows ARM version up to `armv6`, so maybe `armv6` is not implemented?
+
+=== ARM baremetal
+
+In this section we will focus on learning ARM architecture concepts that can only learnt on baremetal setups.
+
+Userland information can be found at: https://github.com/cirosantilli/arm-assembly-cheat
+
+==== ARM exception levels
+
+ARM exception levels are analogous to x86 <<ring0,rings>>.
+
+The current EL can be determined by reading from certain registers, which we do with bit disassembly at:
+
+....
+./run --arch arm --baremetal userland/arch/arm/dump_regs.c
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/dump_regs.c
+....
+
+The relevant bits are:
+
+* arm: `CPSR.M`
+* aarch64: `CurrentEl.EL`. This register is not accessible from EL0 for some weird reason however.
+
+Sources:
+
+* link:baremetal/arch/arm/dump_regs.c[]
+* link:baremetal/arch/aarch64/dump_regs.c[]
+
+The instructions that find the ARM EL are explained at: https://stackoverflow.com/questions/31787617/what-is-the-current-execution-mode-exception-level-etc
+
+The lower ELs are not mandated by the architecture, and can be controlled through command line options in QEMU and gem5.
+
+In QEMU, you can configure the lowest EL as explained at https://stackoverflow.com/questions/42824706/qemu-system-aarch64-entering-el1-when-emulating-a53-power-up
+
+....
+./run --arch arm --baremetal userland/arch/arm/dump_regs.c | grep CPSR.M
+./run --arch arm --baremetal userland/arch/arm/dump_regs.c -- -machine virtualization=on | grep CPSR.M
+./run --arch arm --baremetal userland/arch/arm/dump_regs.c -- -machine secure=on | grep CPSR.M
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/dump_regs.c | grep CurrentEL.EL
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/dump_regs.c -- -machine virtualization=on | grep CurrentEL.EL
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/dump_regs.c -- -machine secure=on | grep CurrentEL.EL
+....
+
+outputs respectively:
+
+....
+CPSR.M 0x3
+CPSR.M 0x3
+CPSR.M 0x3
+CurrentEL.EL 0x1
+CurrentEL.EL 0x2
+CurrentEL.EL 0x3
+....
+
+TODO: why is arm `CPSR.M` stuck at `0x3` which equals Supervisor mode?
+
+In gem5, you can configure the lowest EL with:
+
+....
+./run --arch arm --baremetal userland/arch/arm/dump_regs.c --emulator gem5
+grep CPSR.M "$(./getvar --arch arm --emulator gem5 gem5_guest_terminal_file)"
+./run --arch arm --baremetal userland/arch/arm/dump_regs.c --emulator gem5 -- --param 'system.have_virtualization = True'
+grep CPSR.M "$(./getvar --arch arm --emulator gem5 gem5_guest_terminal_file)"
+./run --arch arm --baremetal userland/arch/arm/dump_regs.c --emulator gem5 -- --param 'system.have_security = True'
+grep CPSR.M "$(./getvar --arch arm --emulator gem5 gem5_guest_terminal_file)"
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/dump_regs.c --emulator gem5
+grep CurrentEL.EL "$(./getvar --arch aarch64 --emulator gem5 gem5_guest_terminal_file)"
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/dump_regs.c --emulator gem5 -- --param 'system.have_virtualization = True'
+grep CurrentEL.EL "$(./getvar --arch aarch64 --emulator gem5 gem5_guest_terminal_file)"
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/dump_regs.c --emulator gem5 -- --param 'system.have_security = True'
+grep CurrentEL.EL "$(./getvar --arch aarch64 --emulator gem5 gem5_guest_terminal_file)"
+....
+
+output:
+
+....
+CPSR.M 0x3
+CPSR.M 0xA
+CPSR.M 0x3
+CurrentEL.EL 0x1
+CurrentEL.EL 0x2
+CurrentEL.EL 0x3
+....
+
+TODO: the call:
+
+....
+./run --arch arm --baremetal userland/arch/arm/dump_regs.c --emulator gem5 -- --param 'system.have_virtualization = True'
+....
+
+started failing with an exception since https://github.com/cirosantilli/linux-kernel-module-cheat/commit/add6eedb76636b8f443b815c6b2dd160afdb7ff4 at the instruction:
+
+....
+vmsr fpexc, r0
+....
+
+in link:baremetal/lib/arm.S[]. That patch however enables SIMD in baremetal, which I feel is more important.
+
+According to <<armarm7>>, access to that register is controlled by other registers `NSACR.{CP11, CP10}` and `HCPTR` so those must be turned off, but I'm lazy to investigate now, even just trying to dump those registers in link:userland/arch/arm/dump_regs.c[] also leads to exceptions...
+
+===== ARM change exception level
+
+TODO. Create a minimal runnable example of going into EL0 and jumping to EL1.
+
+===== ARM SP0 vs SPx
+
+See <<armarm8-db>> D1.6.2 "The stack pointer registers".
+
+TODO create a minimal runnable example.
+
+TODO: how to select to use SP0 in an exception handler?
+
+==== ARM SVC instruction
+
+This is the most basic example of exception handling we have.
+
+We a handler for SVC, do an SVC, and observe that the handler got called and returned from C and assembly:
+
+....
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/svc.c
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/svc_asm.S
+....
+
+Sources:
+
+* link:baremetal/arch/aarch64/svc.c[]
+* link:baremetal/arch/aarch64/svc_asm.S[]
+
+Sample output for the C one:
+
+....
+DAIF 0x3C0
+SPSEL 0x1
+VBAR_EL1 0x40000800
+after_svc 0x4000209c
+lkmc_vector_trap_handler
+exc_type 0x11
+exc_type is LKMC_VECTOR_SYNC_SPX
+ESR 0x5600ABCD
+ESR.EC 0x15
+ESR.EC.ISS.imm16 0xABCD
+SP 0x4200C510
+ELR 0x4000209C
+SPSR 0x600003C5
+x0 0x0
+x1 0x1
+x2 0x15
+x3 0x15
+x4 0x4000A178
+x5 0xFFFFFFF6
+x6 0x4200C390
+x7 0x78
+x8 0x1
+x9 0x14
+x10 0x0
+x11 0x0
+x12 0x0
+x13 0x0
+x14 0x0
+x15 0x0
+x16 0x0
+x17 0x0
+x18 0x0
+x19 0x0
+x20 0x0
+x21 0x0
+x22 0x0
+x23 0x0
+x24 0x0
+x25 0x0
+x26 0x0
+x27 0x0
+x28 0x0
+x29 0x4200C510
+x30 0x40002064
+....
+
+The C code does an:
+
+....
+svc 0xABCD
+....
+
+and the value 0xABCD appears at the bottom of <<arm-esr-register>>:
+
+....
+ESR 0x5600ABCD
+ESR.EC 0x15
+ESR.EC.ISS.imm16 0xABCD
+....
+
+The other important register is the <<arm-elr-register>>, which contains the return address after the exception.
+
+From the output, we can see that it matches the value as obtained by taking the address of a label placed just after the SVC:
+
+....
+after_svc 0x4000209c
+ELR 0x4000209C
+....
+
+Both QEMU and gem5 are able to trace interrupts in addition to instructions, and it is instructive to enable both and have a look at the traces.
+
+With <<qemu-d-tracing>>:
+
+....
+./run \
+  --arch aarch64 \
+  --baremetal baremetal/arch/aarch64/svc.c \
+  -- -d in_asm,int \
+;
+....
+
+the output at 8f73910dd1fc1fa6dc6904ae406b7598cdcd96d7 contains:
+
+....
+
+----------------
+IN: main
+0x40002098:  d41579a1  svc      #0xabcd
+
+Taking exception 2 [SVC]
+...from EL1 to EL1
+...with ESR 0x15/0x5600abcd
+...with ELR 0x4000209c
+...to EL1 PC 0x40000a00 PSTATE 0x3c5
+----------------
+IN:
+0x40000a00:  14000225  b        #0x40001294
+
+----------------
+IN:
+0x40001294:  a9bf7bfd  stp      x29, x30, [sp, #-0x10]!
+0x40001298:  a9bf73fb  stp      x27, x28, [sp, #-0x10]!
+0x4000129c:  a9bf6bf9  stp      x25, x26, [sp, #-0x10]!
+0x400012a0:  a9bf63f7  stp      x23, x24, [sp, #-0x10]!
+0x400012a4:  a9bf5bf5  stp      x21, x22, [sp, #-0x10]!
+0x400012a8:  a9bf53f3  stp      x19, x20, [sp, #-0x10]!
+0x400012ac:  a9bf4bf1  stp      x17, x18, [sp, #-0x10]!
+0x400012b0:  a9bf43ef  stp      x15, x16, [sp, #-0x10]!
+0x400012b4:  a9bf3bed  stp      x13, x14, [sp, #-0x10]!
+0x400012b8:  a9bf33eb  stp      x11, x12, [sp, #-0x10]!
+0x400012bc:  a9bf2be9  stp      x9, x10, [sp, #-0x10]!
+0x400012c0:  a9bf23e7  stp      x7, x8, [sp, #-0x10]!
+0x400012c4:  a9bf1be5  stp      x5, x6, [sp, #-0x10]!
+0x400012c8:  a9bf13e3  stp      x3, x4, [sp, #-0x10]!
+0x400012cc:  a9bf0be1  stp      x1, x2, [sp, #-0x10]!
+0x400012d0:  d5384015  mrs      x21, spsr_el1
+0x400012d4:  a9bf03f5  stp      x21, x0, [sp, #-0x10]!
+0x400012d8:  d5384035  mrs      x21, elr_el1
+0x400012dc:  a9bf57ff  stp      xzr, x21, [sp, #-0x10]!
+0x400012e0:  d2800235  movz     x21, #0x11
+0x400012e4:  d5385216  mrs      x22, esr_el1
+0x400012e8:  a9bf5bf5  stp      x21, x22, [sp, #-0x10]!
+0x400012ec:  910003f5  mov      x21, sp
+0x400012f0:  910482b5  add      x21, x21, #0x120
+0x400012f4:  f9000bf5  str      x21, [sp, #0x10]
+0x400012f8:  910003e0  mov      x0, sp
+0x400012fc:  9400023f  bl       #0x40001bf8
+
+----------------
+IN: lkmc_vector_trap_handler
+0x40001bf8:  a9bd7bfd  stp      x29, x30, [sp, #-0x30]!
+....
+
+And with <<gem5-tracing>>:
+
+....
+./run \
+  --arch aarch64 \
+  --baremetal baremetal/arch/aarch64/svc_asm.S \
+  --trace ExecAll,Faults \
+  --trace-stdout \
+;
+....
+
+the output contains:
+
+....
+   4000: system.cpu A0 T0 : @main+8    :   svc   #0x0               : IntAlu :   flags=(IsSerializeAfter|IsNonSpeculative|IsSyscall)
+   4000: Supervisor Call: Invoking Fault (AArch64 target EL):Supervisor Call cpsr:0x3c5 PC:0x80000808 elr:0x8000080c newVec: 0x80001200
+   4500: system.cpu A0 T0 : @vector_table+512    :   b   <_curr_el_spx_sync>  : IntAlu :   flags=(IsControl|IsDirectControl|IsUncondControl)
+....
+
+So we see in both cases that the:
+
+* SVC is done
+* an exception happens, and the PC jumps to address 0x40000a00. From our custom terminal prints further on, we see that this equals `VBAR_EL1 + 0x200`.
++
+According to the format of the <<armv8-exception-vector-table-format>>, we see that the `+ 0x200` means that we are jumping in the Current EL with SPx.
++
+This can also be deduced from the message `exc_type is LKMC_VECTOR_SYNC_SPX`: we just manually store a different integer for every exception vector type in our handler code to be able to tell what happened.
++
+This is the one used because we are jumping <<arm-exception-levels,from EL1 to EL1>>.
++
+We set VBAR_EL1 to that address ourselves <<baremetal-bootloaders,in the bootloader>>.
+* at 0x40000a00 a `b #0x40001294` is done and then at 0x40001294 boilerplate preparation is done for lkmc_vector_trap_handler starting with several STP instructions.
++
+We have coded both of those in our vector table macro madness. As of LKMC 8f73910dd1fc1fa6dc6904ae406b7598cdcd96d7, both come from link:lkmc/aarch64.h[]:
++
+** `b #0x40001294` comes from: `LKMC_VECTOR_ENTRY`
+** the STP come from: `LKMC_VECTOR_BUILD_TRAPFRAME`
++
+We jump immediately from inside `LKMC_VECTOR_ENTRY` to `LKMC_VECTOR_BUILD_TRAPFRAME` because we can only use 0x80 bytes of instructions for each one before reaching the next handler, so we might as well get it over with by jumping into a memory region without those constraints.
++
+TODO: why doesn't QEMU show our nice symbol names? gem5 shows them fine, and `nm` says they are there!
++
+....
+0000000040000800 T lkmc_vector_table
+0000000040001294 T lkmc_vector_build_trapframe_curr_el_spx_sync
+....
+
+The exception return happens at the end of `lkmc_vector_trap_handler`:
+
+....
+----------------
+IN: lkmc_vector_trap_handler
+0x40002000:  d503201f  nop
+0x40002004:  a8c37bfd  ldp      x29, x30, [sp], #0x30
+0x40002008:  d65f03c0  ret
+
+----------------
+IN:
+0x40001300:  910043ff  add      sp, sp, #0x10
+0x40001304:  a8c15bf5  ldp      x21, x22, [sp], #0x10
+0x40001308:  d5184036  msr      elr_el1, x22
+
+----------------
+IN:
+0x4000130c:  a8c103f5  ldp      x21, x0, [sp], #0x10
+0x40001310:  d5184015  msr      spsr_el1, x21
+
+----------------
+IN:
+0x40001314:  a8c10be1  ldp      x1, x2, [sp], #0x10
+0x40001318:  a8c113e3  ldp      x3, x4, [sp], #0x10
+0x4000131c:  a8c11be5  ldp      x5, x6, [sp], #0x10
+0x40001320:  a8c123e7  ldp      x7, x8, [sp], #0x10
+0x40001324:  a8c12be9  ldp      x9, x10, [sp], #0x10
+0x40001328:  a8c133eb  ldp      x11, x12, [sp], #0x10
+0x4000132c:  a8c13bed  ldp      x13, x14, [sp], #0x10
+0x40001330:  a8c143ef  ldp      x15, x16, [sp], #0x10
+0x40001334:  a8c14bf1  ldp      x17, x18, [sp], #0x10
+0x40001338:  a8c153f3  ldp      x19, x20, [sp], #0x10
+0x4000133c:  a8c15bf5  ldp      x21, x22, [sp], #0x10
+0x40001340:  a8c163f7  ldp      x23, x24, [sp], #0x10
+0x40001344:  a8c16bf9  ldp      x25, x26, [sp], #0x10
+0x40001348:  a8c173fb  ldp      x27, x28, [sp], #0x10
+0x4000134c:  a8c17bfd  ldp      x29, x30, [sp], #0x10
+0x40001350:  d69f03e0  eret
+
+Exception return from AArch64 EL1 to AArch64 EL1 PC 0x4000209c
+----------------
+IN: main
+0x4000209c:  d0000040  adrp     x0, #0x4000c000
+....
+
+which does an `eret` and jumps back to 0x4000209c, which is 4 bytes and therefore one instruction after where SVC was taken at 0x40002098.
+
+In QEMU,  and then we just continue running from the exception handler address.
+
+On the terminal output, we observe the initial values of:
+
+* DAIF: 0x3c0, i.e. 4 bits (6 to 9) set to 1, which means that exceptions are masked for each exception type: Synchronous, System error, IRQ and FIQ.
++
+This reset value is defined by <<armarm8>> C5.2.2 "DAIF, Interrupt Mask Bits".
+* SPSel: 0x1, which means: use SPx instead of SP0.
++
+This reset value is defined by <<armarm8>> C5.2.16 "SPSel, Stack Pointer Select".
+* VBAR_EL1: 0x0 holds the base address of the vector table
++
+This reset value is defined UNKNOWN by <<armarm8>> D10.2.116 "VBAR_EL1, Vector Base Address Register (EL1)", so we must set it to something ourselves to have greater portability.
+
+Bibliography:
+
+* https://github.com/torvalds/linux/blob/v4.20/arch/arm64/kernel/entry.S#L430 this is where the kernel defines the vector table
+* https://github.com/dwelch67/qemu_arm_samples/tree/07162ba087111e0df3f44fd857d1b4e82458a56d/swi01
+* https://github.com/NienfengYao/armv8-bare-metal/blob/572c6f95880e70aa92fe9fed4b8ad7697082a764/vector.S#L168
+* https://stackoverflow.com/questions/24162109/arm-assembly-code-and-svc-numbering/57064062#57064062
+* https://stackoverflow.com/questions/44991264/armv8-exception-vectors-and-handling
+
+===== ARMv8 exception vector table format
+
+The vector table format is described on <<armarm8>> Table D1-7 "Vector offsets from vector table base address".
+
+A good representation of the format of the vector table can also be found at <<armv8-programmers-guide>> Table 10-2 "Vector table offsets from vector table base address".
+
+The first part of the table contains: xref:table-armv8-vector-handlers[xrefstyle=full].
+
+[[table-armv8-vector-handlers]]
+.Summary of ARMv8 vector handlers
+[options="header"]
+|===
+|Address |Exception type |Description
+
+|VBAR_ELn + 0x000
+|Synchronous
+|Current EL with SP0
+
+|VBAR_ELn + 0x080
+|IRQ/vIRQ
+|Current EL with SP0
+
+|VBAR_ELn + 0x100
+|FIQ/vFIQ
+|Current EL with SP0
+
+|VBAR_ELn + 0x180
+|SError/vSError
+|Current EL with SP0
+
+|VBAR_ELn + 0x200
+|Synchronous
+|Current EL with SPx
+
+|VBAR_ELn + 0x280
+|IRQ/vIRQ
+|Current EL with SPx
+
+|VBAR_ELn + 0x300
+|FIQ/vFIQ
+|Current EL with SPx
+
+|VBAR_ELn + 0x380
+|SError/vSError
+|Lower EL using AArch64
+
+|VBAR_ELn + 0x400
+|Synchronous
+|Lower EL using AArch64
+
+|VBAR_ELn + 0x480
+|IRQ/vIRQ
+|Lower EL using AArch64
+
+|VBAR_ELn + 0x500
+|FIQ/vFIQ
+|Lower EL using AArch64
+
+|VBAR_ELn + 0x580
+|SError/vSError
+|Lower EL using AArch64
+
+|VBAR_ELn + 0x600
+|Synchronous
+|Lower EL using AArch32
+
+|VBAR_ELn + 0x680
+|IRQ/vIRQ
+|Lower EL using AArch32
+
+|VBAR_ELn + 0x700
+|FIQ/vFIQ
+|Lower EL using AArch32
+
+|VBAR_ELn + 0x780
+|SError/vSError
+|Lower EL using AArch32
+
+|===
+
+and the following other parts are analogous, but referring to SPx and lower ELs.
+
+Now, to fully understand this table, we need the following concepts:
+
+* Synchronous: what happens for example when we do an <<arm-svc-instruction>>.
++
+It is called synchronous because the CPU is generating it itself from an instruction, unlike an interrupt generated by a device like a keyboard, which ends up in an IRQ or FIQ
+* IRQ: an example can be found at: <<arm-timer>>
+* TODO FIQ vs IRQ
+* TODO SError
+* EL changes: <<arm-change-exception-level>>
+* SP0 vs SPx: <<arm-sp0-vs-spx>>.
+
+===== ARM ESR register
+
+Exception Syndrome Register.
+
+See example at: xref:arm-svc-instruction[xrefstyle=full]
+
+Documentation: <<armarm8-db>> D12.2.36 "ESR_EL1, Exception Syndrome Register (EL1)".
+
+===== ARM ELR register
+
+Exception Link Register.
+
+See the example at: xref:arm-svc-instruction[xrefstyle=full]
+
+==== ARM multicore
+
+....
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/multicore.S --cpus 2
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/multicore.S --cpus 2 --emulator gem5
+./run --arch arm --baremetal baremetal/arch/aarch64/multicore.S --cpus 2
+./run --arch arm --baremetal baremetal/arch/aarch64/multicore.S --cpus 2 --emulator gem5
+....
+
+Sources:
+
+* link:baremetal/arch/aarch64/multicore.S[]
+* link:baremetal/arch/arm/multicore.S[]
+
+CPU 0 of this program enters a spinlock loop: it repeatedly checks if a given memory address is 1.
+
+So, we need CPU 1 to come to the rescue and set that memory address to 1, otherwise CPU 0 will be stuck there forever!
+
+Don't believe me? Then try:
+
+....
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/multicore.S --cpus 1
+....
+
+and watch it hang forever.
+
+Note that if you try the same thing on gem5:
+
+....
+./run --arch aarch64 --baremetal baremetal/arch/aarch64/multicore.S --cpus 1 --emulator gem5
+....
+
+then the gem5 actually exits with <<gem5-simulate-limit-reached>> as opposed to the expected:
+
+....
+Exiting @ tick 36500 because m5_exit instruction encountered
+....
+
+since gem5 is able to detect when nothing will ever happen, and exits.
+
+When GDB step debugging, switch between cores with the usual `thread` commands, see also: xref:gdb-step-debug-multicore-userland[xrefstyle=full].
+
+Bibliography: https://stackoverflow.com/questions/980999/what-does-multicore-assembly-language-look-like/33651438#33651438
+
+===== ARM WFE and SEV instructions
+
+The WFE and SEV instructions are just hints: a compliant implementation can treat them as NOPs.
+
+However, likely no implementation likely does (TODO confirm), since:
+
+* WFE puts the core in a low power mode
+* SEV wakes up cores from a low power mode
+
+and power consumption is key in ARM applications.
+
+In QEMU 3.0.0, SEV is a NOPs, and WFE might be, but I'm not sure, see: https://github.com/qemu/qemu/blob/v3.0.0/target/arm/translate-a64.c#L1423
+
+....
+    case 2: /* WFE */
+        if (!(tb_cflags(s->base.tb) & CF_PARALLEL)) {
+            s->base.is_jmp = DISAS_WFE;
+        }
+        return;
+    case 4: /* SEV */
+    case 5: /* SEVL */
+        /* we treat all as NOP at least for now */
+        return;
+....
+
+TODO: what does the WFE code do? How can it not be a NOP if SEV is a NOP? https://github.com/qemu/qemu/blob/v3.0.0/target/arm/translate.c#L4609 might explain why, but it is Chinese to me (I only understand 30% ;-)):
+
+....
+ * For WFI we will halt the vCPU until an IRQ. For WFE and YIELD we
+ * only call the helper when running single threaded TCG code to ensure
+ * the next round-robin scheduled vCPU gets a crack. In MTTCG mode we
+ * just skip this instruction. Currently the SEV/SEVL instructions
+ * which are *one* of many ways to wake the CPU from WFE are not
+ * implemented so we can't sleep like WFI does.
+ */
+....
+
+For gem5 however, if we comment out the SVE instruction, then it actually exits with `simulate() limit reached`, so the CPU truly never wakes up, which is a more realistic behaviour.
+
+The following Raspberry Pi bibliography helped us get this sample up and running:
+
+* https://github.com/bztsrc/raspi3-tutorial/tree/a3f069b794aeebef633dbe1af3610784d55a0efa/02_multicorec
+* https://github.com/dwelch67/raspberrypi/tree/a09771a1d5a0b53d8e7a461948dc226c5467aeec/multi00
+* https://github.com/LdB-ECM/Raspberry-Pi/blob/3b628a2c113b3997ffdb408db03093b2953e4961/Multicore/SmartStart64.S
+* https://github.com/LdB-ECM/Raspberry-Pi/blob/3b628a2c113b3997ffdb408db03093b2953e4961/Multicore/SmartStart32.S
+
+===== ARM PSCI
+
+In QEMU, CPU 1 starts in a halted state. This can be observed from GDB, where:
+
+....
+info threads
+....
+
+shows something like:
+
+....
+* 1    Thread 1 (CPU#0 [running]) lkmc_start
+  2    Thread 2 (CPU#1 [halted ]) lkmc_start
+....
+
+To wake up CPU 1 on QEMU, we must use the Power State Coordination Interface (PSCI) which is documented at: https://developer.arm.com/docs/den0022/latest/arm-power-state-coordination-interface-platform-design-document[].
+
+This interface uses HVC calls, and the calling convention is documented at "SMC CALLING CONVENTION" https://developer.arm.com/docs/den0028/latest[].
+
+If we boot the Linux kernel on QEMU and <<get-device-tree-from-a-running-kernel,dump the auto-generated device tree>>, we observe that it contains the address of the PSCI CPU_ON call:
+
+....
+        psci {
+                method = "hvc";
+                compatible = "arm,psci-0.2", "arm,psci";
+                cpu_on = <0xc4000003>;
+                migrate = <0xc4000005>;
+                cpu_suspend = <0xc4000001>;
+                cpu_off = <0x84000002>;
+        };
+....
+
+The Linux kernel wakes up the secondary cores in this exact same way at: https://github.com/torvalds/linux/blob/v4.19/drivers/firmware/psci.c#L122 We first actually got it working here by grepping the kernel and step debugging that call :-)
+
+In gem5, CPU 1 starts woken up from the start, so PSCI is not needed. TODO gem5 actually blows up if we try to do the HVC call, understand why.
+
+Bibliography: https://stackoverflow.com/questions/20055754/arm-start-wakeup-bringup-the-other-cpu-cores-aps-and-pass-execution-start-addre/53473447#53473447
+
+===== ARM DMB instruction
+
+TODO: create and study a minimal examples in gem5 where the DMB instruction leads to less cycles: https://stackoverflow.com/questions/15491751/real-life-use-cases-of-barriers-dsb-dmb-isb-in-arm
+
+==== ARM timer
+
+TODO get working. Attempt at: link:baremetal/arch/aarch64/timer.c[]
+
+The timer is documented at: <<armarm8-db>> Chapter D10 "The Generic Timer in AArch64 state"
+
+The key registers to keep in mind are:
+
+* `CNTVCT_EL0`: "Counter-timer Virtual Count register". The increasing current counter value.
+* `CNTFRQ_EL0`: "Counter-timer Frequency register". "Indicates the system counter clock frequency, in Hz."
+* `CNTV_CTL_EL0`: "Counter-timer Virtual Timer Control register". This control register is very simple and only has three fields:
+** `CNTV_CTL_EL0.ISTATUS` bit: set to 1 when the timer condition is met
+** `CNTV_CTL_EL0.IMASK` bit: if 1, the interrupt does not happen when `ISTATUS` becomes one
+** `CNTV_CTL_EL0.ENABLE` bit: if 0, the counter is turned off, interrupts don't happen
+* `CNTV_CVAL_EL0`: "Counter-timer Virtual Timer CompareValue register". The interrupt happens when `CNTVCT_EL0` reaches the value in this register.
+
+Bibliography:
+
+* https://stackoverflow.com/questions/51094092/how-to-make-timer-irq-work-on-qemu-machine-virt-cpu-cortex-a57
+* https://stackoverflow.com/questions/44198483/arm-timers-and-interrupts
+
+==== ARM GIC
+
+Generic Interrupt Controller.
+
+Examples:
+
+* xref:arm-timer[]
+
+ARM publishes both a GIC standard architecture specification, and specific implementations of these specifications.
+
+The specification can be found at: https://developer.arm.com/docs/ihi0069/latest
+
+As of 2019Q2 the latest version if v4.0, often called GICv4: https://static.docs.arm.com/ihi0069/e/Q1-IHI0069E_gic_architecture_specification_v3.1_19_01_21.pdf
+
+That document clarifies that GICv2 is a legacy specification only:
+
+....
+Version 2.0 (GICv2) is only described in terms of the GICv3 optional support for legacy operation
+....
+
+The specific models have names of type GIC-600, GIC-500, etc.
+
+==== ARM paging
+
+TODO create a minimal working aarch64 example analogous to the x86 one at: https://github.com/cirosantilli/x86-bare-metal-examples/blob/6dc9a73830fc05358d8d66128f740ef9906f7677/paging.S
+
+A general introduction to paging with x86 examples can be found at: https://cirosantilli.com/x86-paging[].
+
+ARM paging is documented at <<armarm8-db>> Chapter D5 and is mostly called VMSAv8 in the ARMv8 manual (Virtual Memory System Architecture).
+
+Paging is enabled by the `SCTLR_EL1.M` bit.
+
+The base table address is selected by the register documented at <<armarm8-db>> D12.2.111 "TTBR0_EL1, Translation Table Base Register 0 (EL1)".
+
+There is also a `TTBR1_EL1` register, which is for the second translation stage to speed up virtualization: https://en.wikipedia.org/wiki/Second_Level_Address_Translation and will not be used in this section.
+
+The translation types are described at: <<armarm8-db>> D5.2.4 "Memory translation granule size".
+
+From this we can see that the translation scheme uses up to 4 levels (0 to 3) and has possible granule sizes 4KiB, 16KiB and 64KiB.
+
+Page table formats are described at <<armarm8-db>> D5.3.1 "VMSAv8-64 translation table level 0, level 1, and level 2 descriptor formats".
+
+==== ARM baremetal bibliography
+
+First, also consider the userland bibliography: xref:arm-assembly-bibliography[xrefstyle=full].
+
+The most useful ARM baremetal example sets we've seen so far are:
+
+* https://github.com/dwelch67/raspberrypi real hardware
+* https://github.com/dwelch67/qemu_arm_samples QEMU `-m vexpress`
+* https://github.com/bztsrc/raspi3-tutorial real hardware + QEMU `-m raspi`
+* https://github.com/LdB-ECM/Raspberry-Pi real hardware
+* https://github.com/BrianSidebotham/arm-tutorial-rpi
+
+===== NienfengYao/armv8-bare-metal
+
+https://github.com/NienfengYao/armv8-bare-metal
+
+The only QEMU `-m virt` aarch64 example set that I can find on the web. Awesome.
+
+A large part of the code is taken from the awesome educational OS under 2-clause BSD as can be seen from file headers: https://github.com/takeharukato/sample-tsk-sw/tree/ce7973aa5d46c9eedb58309de43df3b09d4f8d8d/hal/aarch64 but Nienfeng largely minimized it.
+
+I needed the following minor patches: https://github.com/NienfengYao/armv8-bare-metal/pull/1
+
+Handles an SVC and setups and handles the timer about once per second.
+
+The source claims GICv3, however if I try to add `-machine gic_version=3` on their command line with our QEMU v4.0.0, then it blows up at:
+
+....
+static void init_gicc(void)
+{
+    uint32_t pending_irq;
+
+    /* Disable CPU interface */
+    *REG_GIC_GICC_CTLR = GICC_CTLR_DISABLE;
+....
+
+which tries to write to 0x8010000 according to GDB.
+
+Without `-machine`, QEMU's DTB clearly states GICv2, so I'm starting to wonder if Nienfeng just made a mistake there? The QEMU GICv3 DTB contains:
+
+....
+reg = <0x0 0x8000000 0x0 0x10000 0x0 0x80a0000 0x0 0xf60000>;
+....
+
+and the GICv2 one:
+
+....
+reg = <0x0 0x8000000 0x0 0x10000 0x0 0x8010000 0x0 0x10000>;
+....
+
+which further confirms that the exception is correct: v2 has a register range at 0x8010000 while in v3 it moved to 0x80a0000 and 0x8010000 is empty.
+
+The original source does not mention GICv3 anywhere, only https://github.com/takeharukato/sample-tsk-sw/blob/c7bbc9dce6b14660bcce8d20735f8c6ebb09396b/hal/aarch64/gic-pl390.c[pl390], which is a specific GIC model that predates the GICv2 spec I believe.
+
+TODO if I hack `#define GIC_GICC_BASE (GIC_BASE + 0xa0000)`, then it goes a bit further, but the next loop never ends.
+
+===== tukl-msd/gem5.bare-metal
+
+https://github.com/tukl-msd/gem5.bare-metal
+
+Reiterated at: https://stackoverflow.com/questions/43682311/uart-communication-in-gem5-with-arm-bare-metal
+
+Basic gem5 aarch64 baremetal setup that just works. Does serial IO and timer through GICv2. Usage:
+
+....
+# Build gem5.
+git clone https://gem5.googlesource.com/public/gem5
+cd gem5
+git checkout 60600f09c25255b3c8f72da7fb49100e2682093a
+scons --ignore-style -j`nproc` build/ARM/gem5.opt
+cd ..
+
+# Build example.
+sudo apt-get install gcc-arm-none-eabi
+git clone https://github.com/tukl-msd/gem5.bare-metal
+cd gem5.bare-metal
+git checkout 6ad1069d4299b775b5491e9252739166bfac9bfe
+cd Simple
+make CROSS_COMPILE_DIR=/usr/bin
+
+# Run example.
+../../gem5/default/build/ARM/gem5.opt' \
+  ../../gem5/configs/example/fs.py' \
+  --bare-metal \
+  --disk-image="$(pwd)/../common/fake.iso" \
+  --kernel="$(pwd)/main.elf" \
+  --machine-type=RealView_PBX \
+  --mem-size=256MB \
+;
+....
+
+=== How we got some baremetal stuff to work
+
+It is nice when thing just work.
+
+But you can also learn a thing or two from how I actually made them work in the first place.
+
+==== Find the UART address
+
+Enter the QEMU console:
+
+....
+Ctrl-X C
+....
+
+Then do:
+
+....
+info mtree
+....
+
+And look for `pl011`:
+
+....
+    0000000009000000-0000000009000fff (prio 0, i/o): pl011
+....
+
+On gem5, it is easy to find it on the source. We are using the machine `RealView_PBX`, and a quick grep leads us to: https://github.com/gem5/gem5/blob/a27ce59a39ec8fa20a3c4e9fa53e9b3db1199e91/src/dev/arm/RealView.py#L615
+
+....
+class RealViewPBX(RealView):
+    uart = Pl011(pio_addr=0x10009000, int_num=44)
+....
+
+==== aarch64 baremetal NEON setup
+
+Inside link:baremetal/lib/aarch64.S[] there is a chunk of code that enables floating point operations:
+
+....
+mov x1, 0x3 << 20
+msr cpacr_el1, x1
+isb
+....
+
+CPACR_EL1 is documented at <<armarm8>> D10.2.29 "CPACR_EL1, Architectural Feature Access Control Register".
+
+Here we touch the CPACR_EL1.FPEN bits to 3, which enable floating point operations:
+
+____
+11 This control does not cause any instructions to be trapped.
+____
+
+We later also added an enable for the CPACR_EL1.ZEN bits, which are needed for <<arm-sve>>.
+
+Without CPACR_EL1.FPEN, the `printf`:
+
+....
+printf("got: %c\n", c);
+....
+
+compiled to a:
+
+....
+str    q0, [sp, #80]
+....
+
+which uses NEON registers, and goes into an exception loop.
+
+It was a bit confusing because there was a previous `printf`:
+
+....
+printf("enter a character\n");
+....
+
+which did not blow up because GCC compiles it into `puts` directly since it has no arguments, and that does not generate NEON instructions.
+
+The last instructions ran was found with:
+
+....
+while(1)
+stepi
+end
+....
+
+or by hacking the QEMU CLI to contain:
+
+.....
+-D log.log -d in_asm
+.....
+
+I could not find any previous NEON instruction executed so this led me to suspect that some NEON initialization was required:
+
+* http://infocenter.arm.com/help/topic/com.arm.doc.dai0527a/DAI0527A_baremetal_boot_code_for_ARMv8_A_processors.pdf "Bare-metal Boot Code for ARMv8-A Processors"
+* https://community.arm.com/processors/f/discussions/5409/how-to-enable-neon-in-cortex-a8
+* https://stackoverflow.com/questions/19231197/enable-neon-on-arm-cortex-a-series
+
+We then tried to copy the code from the "Bare-metal Boot Code for ARMv8-A Processors" document:
+
+....
+// Disable trapping of accessing in EL3 and EL2.
+MSR CPTR_EL3, XZR
+MSR CPTR_EL3, XZR
+// Disable access trapping in EL1 and EL0.
+MOV X1, #(0x3 << 20) // FPEN disables trapping to EL1.
+MSR CPACR_EL1, X1
+ISB
+....
+
+but it entered an exception loop at `MSR CPTR_EL3, XZR`.
+
+We then found out that QEMU <<arm-exception-levels,starts in EL1>>, and so we kept just the EL1 part, and it worked. Related:
+
+* https://stackoverflow.com/questions/42824706/qemu-system-aarch64-entering-el1-when-emulating-a53-power-up
+* https://stackoverflow.com/questions/37299524/neon-support-in-armv8-system-mode-qemu
+
+=== Baremetal tests
+
+Baremetal tests work exactly like <<user-mode-tests>>, except that you have to add the `--mode baremetal` option, for example:
+
+....
+./test-executables --mode baremetal --arch aarch64
+....
+
+In baremetal, we detect if tests failed by parsing logs for the <<magic-failure-string>>.
+
+See: xref:test-this-repo[xrefstyle=full] for more useful testing tips.
+

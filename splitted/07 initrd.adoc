@@ -1,0 +1,185 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== initrd
+
+The kernel can boot from an CPIO file, which is a directory serialization format much like tar: https://superuser.com/questions/343915/tar-vs-cpio-what-is-the-difference
+
+The bootloader, which for us is provided by QEMU itself, is then configured to put that CPIO into memory, and tell the kernel that it is there.
+
+This is very similar to the kernel image itself, which already gets put into memory by the QEMU `-kernel` option.
+
+With this setup, you don't even need to give a root filesystem to the kernel: it just does everything in memory in a ramfs.
+
+To enable initrd instead of the default ext2 disk image, do:
+
+....
+./build-buildroot --initrd
+./run --initrd
+....
+
+By looking at the QEMU run command generated, you can see that we didn't give the `-drive` option at all:
+
+....
+cat "$(./getvar run_dir)/run.sh"
+....
+
+Instead, we used the QEMU `-initrd` option to point to the `.cpio` filesystem that Buildroot generated for us.
+
+Try removing that `-initrd` option to watch the kernel panic without rootfs at the end of boot.
+
+When using `.cpio`, there can be no <<disk-persistency,filesystem persistency>> across boots, since all file operations happen in memory in a tmpfs:
+
+....
+date >f
+poweroff
+cat f
+# can't open 'f': No such file or directory
+....
+
+which can be good for automated tests, as it ensures that you are using a pristine unmodified system image every time.
+
+Not however that we already disable disk persistency by default on ext2 filesystems even without `--initrd`: xref:disk-persistency[xrefstyle=full].
+
+One downside of this method is that it has to put the entire filesystem into memory, and could lead to a panic:
+
+....
+end Kernel panic - not syncing: Out of memory and no killable processes...
+....
+
+This can be solved by increasing the memory with:
+
+....
+./run --initrd --memory 256M
+....
+
+The main ingredients to get initrd working are:
+
+* `BR2_TARGET_ROOTFS_CPIO=y`: make Buildroot generate `images/rootfs.cpio` in addition to the other images.
++
+It is also possible to compress that image with other options.
+* `qemu -initrd`: make QEMU put the image into memory and tell the kernel about it.
+* `CONFIG_BLK_DEV_INITRD=y`: Compile the kernel with initrd support, see also: https://unix.stackexchange.com/questions/67462/linux-kernel-is-not-finding-the-initrd-correctly/424496#424496
++
+Buildroot forces that option when `BR2_TARGET_ROOTFS_CPIO=y` is given
+
+TODO: how does the bootloader inform the kernel where to find initrd? https://unix.stackexchange.com/questions/89923/how-does-linux-load-the-initrd-image
+
+=== initrd in desktop distros
+
+Most modern desktop distributions have an initrd in their root disk to do early setup.
+
+The rationale for this is described at: https://en.wikipedia.org/wiki/Initial_ramdisk
+
+One obvious use case is having an encrypted root filesystem: you keep the initrd in an unencrypted partition, and then setup decryption from there.
+
+I think GRUB then knows read common disk formats, and then loads that initrd to memory with a `/boot/grub/grub.cfg` directive of type:
+
+....
+initrd /initrd.img-4.4.0-108-generic
+....
+
+Related: https://stackoverflow.com/questions/6405083/initrd-and-booting-the-linux-kernel
+
+=== initramfs
+
+initramfs is just like <<initrd>>, but you also glue the image directly to the kernel image itself using the kernel's build system.
+
+Try it out with:
+
+....
+./build-buildroot --initramfs
+./build-linux --initramfs
+./run --initramfs
+....
+
+Notice how we had to rebuild the Linux kernel this time around as well after Buildroot, since in that build we will be gluing the CPIO to the kernel image.
+
+Now, once again, if we look at the QEMU run command generated, we see all that QEMU needs is the `-kernel` option, no `-drive` not even `-initrd`! Pretty cool:
+
+....
+cat "$(./getvar run_dir)/run.sh"
+....
+
+It is also interesting to observe how this increases the size of the kernel image if you do a:
+
+....
+ls -lh "$(./getvar linux_image)"
+....
+
+before and after using initramfs, since the `.cpio` is now glued to the kernel image.
+
+Don't forget that to stop using initramfs, you must rebuild the kernel without `--initramfs` to get rid of the attached CPIO image:
+
+....
+./build-linux
+./run
+....
+
+Alternatively, consider using <<linux-kernel-build-variants>> if you need to switch between initramfs and non initramfs often:
+
+....
+./build-buildroot --initramfs
+./build-linux --initramfs --linux-build-id initramfs
+./run --initramfs --linux-build-id
+....
+
+Setting up initramfs is very easy: our scripts just set `CONFIG_INITRAMFS_SOURCE` to point to the CPIO path.
+
+http://nairobi-embedded.org/initramfs_tutorial.html shows a full manual setup.
+
+=== rootfs
+
+This is how `/proc/mounts` shows the root filesystem:
+
+* hard disk: `/dev/root on / type ext2 (rw,relatime,block_validity,barrier,user_xattr)`. That file does not exist however.
+* initrd: `rootfs on / type rootfs (rw)`
+* initramfs: `rootfs on / type rootfs (rw)`
+
+TODO: understand `/dev/root` better:
+
+* https://unix.stackexchange.com/questions/295060/why-on-some-linux-systems-does-the-root-filesystem-appear-as-dev-root-instead
+* https://superuser.com/questions/1213770/how-do-you-determine-the-root-device-if-dev-root-is-missing
+
+==== /dev/root
+
+See: xref:rootfs[xrefstyle=full]
+
+=== gem5 initrd
+
+TODO we were not able to get it working yet: https://stackoverflow.com/questions/49261801/how-to-boot-the-linux-kernel-with-initrd-or-initramfs-with-gem5
+
+This would require gem5 to load the CPIO into memory, just like QEMU. Grepping `initrd` shows some ARM hits under:
+
+....
+src/arch/arm/linux/atag.hh
+....
+
+but they are commented out.
+
+=== gem5 initramfs
+
+This could in theory be easier to make work than initrd since the emulator does not have to do anything special.
+
+However, it didn't: boot fails at the end because it does not see the initramfs, but rather tries to open our dummy root filesystem, which unsurprisingly does not have a format in a way that the kernel understands:
+
+....
+VFS: Cannot open root device "sda" or unknown-block(8,0): error -5
+....
+
+We think that this might be because gem5 boots directly `vmlinux`, and not from the final compressed images that contain the attached rootfs such as `bzImage`, which is what QEMU does, see also: xref:vmlinux-vs-bzimage-vs-zimage-vs-image[xrefstyle=full].
+
+To do this failed test, we automatically pass a dummy disk image as of gem5 7fa4c946386e7207ad5859e8ade0bbfc14000d91 since the scripts don't handle a missing `--disk-image` well, much like is currently done for <<baremetal>>.
+
+Interestingly, using initramfs significantly slows down the gem5 boot, even though it did not work. For example, we've observed a 4x slowdown of as 17062a2e8b6e7888a14c3506e9415989362c58bf for aarch64. This must be because expanding the large attached CPIO must be expensive. We can clearly see from the kernel logs that the kernel just hangs at a point after the message `PCI: CLS 0 bytes, default 64` for a long time before proceeding further.
+

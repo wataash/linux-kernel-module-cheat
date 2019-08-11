@@ -1,0 +1,1836 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== gem5
+
+Getting started at: xref:gem5-buildroot-setup[xrefstyle=full].
+
+=== gem5 vs QEMU
+
+* advantages of gem5:
+** simulates a generic more realistic pipelined and optionally out of order CPU cycle by cycle, including a realistic DRAM memory access model with latencies, caches and page table manipulations. This allows us to:
++
+--
+*** do much more realistic performance benchmarking with it, which makes absolutely no sense in QEMU, which is purely functional
+*** make certain functional observations that are not possible in QEMU, e.g.:
+**** use Linux kernel APIs that flush cache memory like DMA, which are crucial for driver development. In QEMU, the driver would still work even if we forget to flush caches.
+**** spectre / meltdown:
+***** https://www.mail-archive.com/gem5-users@gem5.org/msg15319.html
+***** https://github.com/jlpresearch/gem5/tree/spectre-test
+--
++
+It is not of course truly cycle accurate, as that:
++
+--
+** would require exposing proprietary information of the CPU designs: https://stackoverflow.com/questions/17454955/can-you-check-performance-of-a-program-running-with-qemu-simulator/33580850#33580850[]
+** would make the simulation even slower TODO confirm, by how much
+--
++
+but the approximation is reasonable.
++
+It is used mostly for microarchitecture research purposes: when you are making a new chip technology, you don't really need to specialize enormously to an existing microarchitecture, but rather develop something that will work with a wide range of future architectures.
+** runs are deterministic by default, unlike QEMU which has a special <<qemu-record-and-replay>> mode, that requires first playing the content once and then replaying
+** gem5 ARM at least appears to implement more low level CPU functionality than QEMU, e.g. QEMU only added EL2 in 2018: https://stackoverflow.com/questions/42824706/qemu-system-aarch64-entering-el1-when-emulating-a53-power-up See also: xref:arm-exception-levels[xrefstyle=full]
+* disadvantages of gem5:
+** slower than QEMU, see: xref:benchmark-linux-kernel-boot[xrefstyle=full]
++
+This implies that the user base is much smaller, since no Android devs.
++
+Instead, we have only chip makers, who keep everything that really works closed, and researchers, who can't version track or document code properly >:-) And this implies that:
++
+--
+*** the documentation is more scarce
+*** it takes longer to support new hardware features
+--
++
+Well, not that AOSP is that much better anyways.
+** not sure: gem5 has BSD license while QEMU has GPL
++
+This suits chip makers that want to distribute forks with secret IP to their customers.
++
+On the other hand, the chip makers tend to upstream less, and the project becomes more crappy in average :-)
+** gem5 is way more complex and harder to modify and maintain
++
+The only hairy thing in QEMU is the binary code generation.
++
+gem5 however has tended towards intensive code generation in order to support all its different hardware types:
++
+*** lots of magic happen on top of pybind11, which is already magic, to more automatically glue the C++ and Python worlds
+*** .isa code which describes most of the instructions
+*** <<gem5-ruby-build,Ruby>> for memory systems
+
+=== gem5 run benchmark
+
+OK, this is why we used gem5 in the first place, performance measurements!
+
+Let's see how many cycles https://en.wikipedia.org/wiki/Dhrystone[Dhrystone], which Buildroot provides, takes for a few different input parameters.
+
+We will do that for various input parameters on full system by taking a checkpoint after the boot finishes a fast atomic CPU boot, and then we will restore in a more detailed mode and run the benchmark:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_DHRYSTONE=y'
+# Boot fast, take checkpoint, and exit.
+./run --arch aarch64 --emulator gem5 --eval-after './gem5.sh'
+
+# Restore the checkpoint after boot, and benchmark with input 1000.
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --eval-after './gem5.sh' \
+  --gem5-readfile 'm5 resetstats;dhrystone 1000;m5 dumpstats' \
+  --gem5-restore 1 \
+  -- \
+  --cpu-type=HPI \
+  --restore-with-cpu=HPI \
+  --caches \
+  --l2cache \
+  --l1d_size=64kB \
+  --l1i_size=64kB \
+  --l2_size=256kB \
+;
+# Get the value for number of cycles.
+# head because there are two lines: our dumpstats and the
+# automatic dumpstats at the end which we don't care about.
+./gem5-stat --arch aarch64 | head -n 1
+
+# Now for input 10000.
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --eval-after './gem5.sh' \
+  --gem5-readfile 'm5 resetstats;dhrystone 10000;m5 dumpstats' \
+  --gem5-restore 1 \
+  -- \
+  --cpu-type=HPI \
+  --restore-with-cpu=HPI \
+  --caches \
+  --l2cache \
+  --l1d_size=64kB \
+  --l1i_size=64kB \
+  --l2_size=256kB \
+;
+./gem5-stat --arch aarch64 | head -n 1
+....
+
+If you ever need a shell to quickly inspect the system state after boot, you can just use:
+
+....
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --eval-after './gem5.sh' \
+  --gem5-readfile 'sh' \
+  --gem5-restore 1 \
+....
+
+This procedure is further automated and DRYed up at:
+
+....
+./gem5-bench-dhrystone
+cat out/gem5-bench-dhrystone.txt
+....
+
+Source: link:gem5-bench-dhrystone[]
+
+Output at 2438410c25e200d9766c8c65773ee7469b599e4a + 1:
+
+....
+n cycles
+1000 13665219
+10000 20559002
+100000 85977065
+....
+
+so as expected, the Dhrystone run with a larger input parameter `100000` took more cycles than the ones with smaller input parameters.
+
+The `gem5-stats` commands output the approximate number of CPU cycles it took Dhrystone to run.
+
+A more naive and simpler to understand approach would be a direct:
+
+....
+./run --arch aarch64 --emulator gem5 --eval 'm5 checkpoint;m5 resetstats;dhrystone 10000;m5 exit'
+....
+
+but the problem is that this method does not allow to easily run a different script without running the boot again. The `./gem5.sh` script works around that by using <<m5-readfile>> as explained further at: xref:gem5-restore-new-script[xrefstyle=full].
+
+Now you can play a fun little game with your friends:
+
+* pick a computational problem
+* make a program that solves the computation problem, and outputs output to stdout
+* write the code that runs the correct computation in the smallest number of cycles possible
+
+To find out why your program is slow, a good first step is to have a look at the <<gem5-m5out-stats-txt-file>>.
+
+==== Skip extra benchmark instructions
+
+A few imperfections of our <<gem5-run-benchmark,benchmarking method>> are:
+
+* when we do `m5 resetstats` and `m5 exit`, there is some time passed before the `exec` system call returns and the actual benchmark starts and ends
+* the benchmark outputs to stdout, which means so extra cycles in addition to the actual computation. But TODO: how to get the output to check that it is correct without such IO cycles?
+
+Solutions to these problems include:
+
+* modify benchmark code with instrumentation directly, see <<m5ops-instructions>> for an example.
+* monitor known addresses TODO possible? Create an example.
+
+Discussion at: https://stackoverflow.com/questions/48944587/how-to-count-the-number-of-cpu-clock-cycles-between-the-start-and-end-of-a-bench/48944588#48944588
+
+Those problems should be insignificant if the benchmark runs for long enough however.
+
+==== gem5 system parameters
+
+Besides optimizing a program for a given CPU setup, chip developers can also do the inverse, and optimize the chip for a given benchmark!
+
+The rabbit hole is likely deep, but let's scratch a bit of the surface.
+
+===== Number of cores
+
+....
+./run --arch arm --cpus 2 --emulator gem5
+....
+
+Check with:
+
+....
+cat /proc/cpuinfo
+getconf _NPROCESSORS_CONF
+....
+
+====== Number of cores in QEMU user mode
+
+TODO why in <<user-mode-simulation>> QEMU always shows the number of cores of the host. E.g., both of the following output the same as `nproc` on the host:
+
+....
+nproc
+./run --userland userland/cpp/thread_hardware_concurrency.cpp
+./run --cpus 2 --userland userland/cpp/thread_hardware_concurrency.cpp
+....
+
+This random page suggests that QEMU splits one host thread thread per guest thread, and thus presumably delegates context switching to the host kernel: https://qemu.weilnetz.de/w64/2012/2012-12-04/qemu-tech.html#User-emulation-specific-details
+
+We can confirm that with:
+
+....
+./run --userland userland/posix/pthread_count.c --userland-args 4
+ps Haux | grep qemu | wc
+....
+
+Remember <<qemu-user-mode-does-not-show-stdout-immediately>> though.
+
+At 369a47fc6e5c2f4a7f911c1c058b6088f8824463 + 1 QEMU appears to spawn 3 host threads plus one for every new guest thread created.  Remember that link:userland/posix/pthread_count.c[] spawns N + 1 total threads if you count the `main` thread.
+
+====== Number of cores in gem5 user mode
+
+gem5 user mode multi core has been particularly flaky compared <<number-of-cores-in-qemu-user-mode,to QEMU's>>.
+
+You have the limitation that you must have at least one core per guest thread, otherwise `pthread_create` fails. For example:
+
+....
+./run --cpus 1 --emulator gem5 --static --userland userland/posix/pthread_self.c --userland-args 1
+....
+
+fails because that process has a total of 2 threads: one for `main` and one extra thread spawned: link:userland/posix/pthread_self.c[] The error message is:
+
+....
+pthread_create: Resource temporarily unavailable
+....
+
+It works however if we add on extra CPU:
+
+....
+./run --cpus 2 --emulator gem5 --static --userland userland/posix/pthread_self.c --userland-args 1
+....
+
+This has to do with the fact that gem5 has a more simplistic thread implementation that does not spawn one host thread per guest thread CPU. Maybe this is required to achieve reproducible runs? What is the task switch algorithm then?
+
+gem5 threading does however show the expected number of cores, e.g.:
+
+....
+./run --cpus 1 --userland userland/cpp/thread_hardware_concurrency.cpp --emulator gem5 --static
+./run --cpus 2 --userland userland/cpp/thread_hardware_concurrency.cpp --emulator gem5 --static
+....
+
+outputs `1` and `2` respectively.
+
+TODO: aarch64 seems to failing to spawn more than 2 threads at 369a47fc6e5c2f4a7f911c1c058b6088f8824463 + 1:
+
+....
+./run --arch aarch64 --cpus 3 --emulator gem5 --static --userland userland/posix/pthread_self.c --userland-args 2
+....
+
+fails with:
+
+....
+Exiting @ tick 18446744073709551615 because simulate() limit reached
+....
+
+====== gem5 se.py user mode with 2 or more pthreads fails with because simulate() limit reached
+
+See bug report at: https://github.com/cirosantilli/linux-kernel-module-cheat/issues/81
+
+Related: <<gem5-simulate-limit-reached>>.
+
+====== gem5 ARM full system with more than 8 cores
+
+https://stackoverflow.com/questions/50248067/how-to-run-a-gem5-arm-aarch64-full-system-simulation-with-fs-py-with-more-than-8
+
+Build the kernel with the <<gem5-arm-linux-kernel-patches>>, and then run:
+
+....
+./run \
+  --arch aarch64 \
+  --linux-build-id gem5-v4.15 \
+  --emulator gem5 \
+  --cpus 16 \
+  -- \
+  --param 'system.realview.gic.gem5_extensions = True' \
+;
+....
+
+===== gem5 cache size
+
+https://stackoverflow.com/questions/49624061/how-to-run-gem5-simulator-in-fs-mode-without-cache/49634544#49634544
+
+A quick `+./run --emulator gem5 -- -h+` leads us to the options:
+
+....
+--caches
+--l1d_size=1024
+--l1i_size=1024
+--l2cache
+--l2_size=1024
+--l3_size=1024
+....
+
+But keep in mind that it only affects benchmark performance of the most detailed CPU types as shown at: xref:table-gem5-cache-cpu-type[xrefstyle=full].
+
+[[table-gem5-cache-cpu-type]]
+.gem5 cache support in function of CPU type
+[options="header"]
+|===
+|arch |CPU type |caches used
+
+|X86
+|`AtomicSimpleCPU`
+|no
+
+|X86
+|`DerivO3CPU`
+|?*
+
+|ARM
+|`AtomicSimpleCPU`
+|no
+
+|ARM
+|`HPI`
+|yes
+
+|===
+
+{empty}*: couldn't test because of:
+
+* https://stackoverflow.com/questions/49011096/how-to-switch-cpu-models-in-gem5-after-restoring-a-checkpoint-and-then-observe-t
+
+Cache sizes can in theory be checked with the methods described at: https://superuser.com/questions/55776/finding-l2-cache-size-in-linux[]:
+
+....
+getconf -a | grep CACHE
+lscpu
+cat /sys/devices/system/cpu/cpu0/cache/index2/size
+....
+
+but for some reason the Linux kernel is not seeing the cache sizes:
+
+* https://stackoverflow.com/questions/49008792/why-doesnt-the-linux-kernel-see-the-cache-sizes-in-the-gem5-emulator-in-full-sy
+* http://gem5-users.gem5.narkive.com/4xVBlf3c/verify-cache-configuration
+
+Behaviour breakdown:
+
+* arm QEMU and gem5 (both `AtomicSimpleCPU` or `HPI`), x86 gem5: `/sys` files don't exist, and `getconf` and `lscpu` value empty
+* x86 QEMU: `/sys` files exist, but `getconf` and `lscpu` values still empty
+
+So we take a performance measurement approach instead:
+
+....
+./gem5-bench-cache -- --arch aarch64
+cat "$(./getvar --arch aarch64 run_dir)/bench-cache.txt"
+....
+
+which gives:
+
+....
+cmd ./run --emulator gem5 --arch aarch64 --gem5-readfile "dhrystone 1000" --gem5-restore 1 -- --caches --l2cache --l1d_size=1024   --l1i_size=1024   --l2_size=1024   --l3_size=1024   --cpu-type=HPI --restore-with-cpu=HPI
+time 23.82
+exit_status 0
+cycles 93284622
+instructions 4393457
+
+cmd ./run --emulator gem5 --arch aarch64 --gem5-readfile "dhrystone 1000" --gem5-restore 1 -- --caches --l2cache --l1d_size=1024kB --l1i_size=1024kB --l2_size=1024kB --l3_size=1024kB --cpu-type=HPI --restore-with-cpu=HPI
+time 14.91
+exit_status 0
+cycles 10128985
+instructions 4211458
+
+cmd ./run --emulator gem5 --arch aarch64 --gem5-readfile "dhrystone 10000" --gem5-restore 1 -- --caches --l2cache --l1d_size=1024   --l1i_size=1024   --l2_size=1024   --l3_size=1024   --cpu-type=HPI --restore-with-cpu=HPI
+time 51.87
+exit_status 0
+cycles 188803630
+instructions 12401336
+
+cmd ./run --emulator gem5 --arch aarch64 --gem5-readfile "dhrystone 10000" --gem5-restore 1 -- --caches --l2cache --l1d_size=1024kB --l1i_size=1024kB --l2_size=1024kB --l3_size=1024kB --cpu-type=HPI --restore-with-cpu=HPI
+time 35.35
+exit_status 0
+cycles 20715757
+instructions 12192527
+
+cmd ./run --emulator gem5 --arch aarch64 --gem5-readfile "dhrystone 100000" --gem5-restore 1 -- --caches --l2cache --l1d_size=1024   --l1i_size=1024   --l2_size=1024   --l3_size=1024   --cpu-type=HPI --restore-with-cpu=HPI
+time 339.07
+exit_status 0
+cycles 1176559936
+instructions 94222791
+
+cmd ./run --emulator gem5 --arch aarch64 --gem5-readfile "dhrystone 100000" --gem5-restore 1 -- --caches --l2cache --l1d_size=1024kB --l1i_size=1024kB --l2_size=1024kB --l3_size=1024kB --cpu-type=HPI --restore-with-cpu=HPI
+time 240.37
+exit_status 0
+cycles 125666679
+instructions 91738770
+....
+
+We make the following conclusions:
+
+* the number of instructions almost does not change: the CPU is waiting for memory all the extra time. TODO: why does it change at all?
+* the wall clock execution time is not directionally proportional to the number of cycles: here we had a 10x cycle increase, but only 2x time increase. This suggests that the simulation of cycles in which the CPU is waiting for memory to come back is faster.
+
+===== gem5 memory latency
+
+TODO These look promising:
+
+....
+--list-mem-types
+--mem-type=MEM_TYPE
+--mem-channels=MEM_CHANNELS
+--mem-ranks=MEM_RANKS
+--mem-size=MEM_SIZE
+....
+
+TODO: now to verify this with the Linux kernel? Besides raw performance benchmarks.
+
+===== Memory size
+
+....
+./run --arch arm --memory 512M
+....
+
+and verify inside the guest with:
+
+....
+free -m
+....
+
+===== gem5 disk and network latency
+
+TODO These look promising:
+
+....
+--ethernet-linkspeed
+--ethernet-linkdelay
+....
+
+and also: `gem5-dist`: https://publish.illinois.edu/icsl-pdgem5/
+
+===== gem5 clock frequency
+
+Clock frequency: TODO how does it affect performance in benchmarks?
+
+....
+./run --arch aarch64 --emulator gem5 -- --cpu-clock 10000000
+....
+
+Check with:
+
+....
+m5 resetstats
+sleep 10
+m5 dumpstats
+....
+
+and then:
+
+....
+./gem5-stat --arch aarch64
+....
+
+TODO: why doesn't this exist:
+
+....
+ls /sys/devices/system/cpu/cpu0/cpufreq
+....
+
+==== Interesting benchmarks
+
+Buildroot built-in libraries, mostly under Libraries > Other:
+
+* Armadillo `C++`: linear algebra
+* fftw: Fourier transform
+* Flann
+* GSL: various
+* liblinear
+* libspacialindex
+* libtommath
+* qhull
+
+There are not yet enabled, but it should be easy to so, see: xref:add-new-buildroot-packages[xrefstyle=full]
+
+===== BST vs heap vs hashmap
+
+The following benchmark setup works both:
+
+* on host through timers + https://stackoverflow.com/questions/51952471/why-do-i-get-a-constant-instead-of-logarithmic-curve-for-an-insert-time-benchmar/51953081#51953081[granule]
+* gem5 with <<m5ops-instructions,dumpstats>>, which can get more precise results with `granule == 1`
+
+It has been used to answer:
+
+* BST vs heap: https://stackoverflow.com/questions/6147243/heap-vs-binary-search-tree-bst/29548834#29548834
+* `std::set`: https://stackoverflow.com/questions/2558153/what-is-the-underlying-data-structure-of-a-stl-set-in-c/51944661#51944661
+* `std::map`: https://stackoverflow.com/questions/18414579/what-data-structure-is-inside-stdmap-in-c/51945119#51945119
+
+To benchmark on the host, we do:
+
+....
+./build-userland-in-tree --force-rebuild --optimization-level 3 ./userland/cpp/bst_vs_heap_vs_hashmap.cpp
+./userland/cpp/bst_vs_heap_vs_hashmap.out 10000000 10000 | tee bst_vs_heap_vs_hashmap.dat
+gnuplot \
+  -e 'input_noext="bst_vs_heap_vs_hashmap"' \
+  -e 'heap_zoom_max=50' \
+  -e 'hashmap_zoom_max=400' \
+  ./bst-vs-heap-vs-hashmap.gnuplot \
+;
+xdg-open bst_vs_heap_vs_hashmap.tmp.png
+....
+
+The parameters `heap_zoom_max` and `hashmap_zoom_max` are chosen manually interactively to best showcase the regions of interest in  those plots.
+
+First we build the benchmark with <<m5ops-instructions>> enabled, and then we run it and extract the stats:
+
+....
+./build-userland \
+  --arch x86_64 \
+  --ccflags='-DLKMC_M5OPS_ENABLE=1' \
+  --force-rebuild userland/cpp/bst_vs_heap_vs_hashmap.cpp \
+  --static \
+  --optimization-level 3 \
+;
+./run \
+  --arch x86_64 \
+  --emulator gem5 \
+  --static \
+  --userland userland/cpp/bst_vs_heap_vs_hashmap.cpp \
+  --userland-args='100000' \
+  -- \
+  --cpu-type=DerivO3CPU \
+  --caches \
+  --l2cache \
+  --l1d_size=32kB \
+  --l1i_size=32kB \
+  --l2_size=256kB \
+  --l3_size=20MB \
+;
+./bst-vs-heap-vs-hashmap-gem5-stats --arch x86_64 | tee bst_vs_heap_vs_hashmap_gem5.dat
+gnuplot \
+  -e 'input_noext="bst_vs_heap_vs_hashmap_gem5"' \
+  -e 'heap_zoom_max=500' \
+  -e 'hashmap_zoom_max=400' \
+  ./bst-vs-heap-vs-hashmap.gnuplot \
+;
+xdg-open bst_vs_heap_vs_hashmap_gem5.tmp.png
+....
+
+TODO: the gem5 simulation blows up on a tcmalloc allocation somewhere near 25k elements as of 3fdd83c2c58327d9714fa2347c724b78d7c05e2b + 1, likely linked to the extreme inefficiency of the stats collection?
+
+The cache sizes were chosen to match the host <<p51>> to improve the comparison. Ideally we should also use the same standard library.
+
+Note that this will take a long time, and will produce a humongous ~40Gb stats file as explained at: xref:gem5-only-dump-selected-stats[xrefstyle=full]
+
+Sources:
+
+* link:userland/cpp/bst_vs_heap_vs_hashmap.cpp[]
+* link:bst-vs-heap-vs-hashmap-gem5-stats[]
+* link:bst-vs-heap-vs-hashmap.gnuplot[]
+
+===== BLAS
+
+Buildroot supports it, which makes everything just trivial:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_OPENBLAS=y'
+./build-userland --package openblas -- userland/libs/openblas/hello.c
+./run --eval-after './libs/openblas/hello.out; echo $?'
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Source: link:userland/libs/openblas/hello.c[]
+
+The test performs a general matrix multiplication:
+
+....
+    |  1.0 -3.0 |   |  1.0  2.0  1.0 |       |  0.5  0.5  0.5 |   |  11.0 - 9.0  5.0 |
+1 * |  2.0  4.0 | * | -3.0  4.0 -1.0 | + 2 * |  0.5  0.5  0.5 | = | - 9.0  21.0 -1.0 |
+    |  1.0 -1.0 |                            |  0.5  0.5  0.5 |   |   5.0 - 1.0  3.0 |
+....
+
+This can be deduced from the Fortran interfaces at
+
+....
+less "$(./getvar buildroot_build_build_dir)"/openblas-*/reference/dgemmf.f
+....
+
+which we can map to our call as:
+
+....
+C := alpha*op( A )*op( B ) + beta*C,
+SUBROUTINE DGEMMF(               TRANA,        TRANB,     M,N,K,  ALPHA,A,LDA,B,LDB,BETA,C,LDC)
+cblas_dgemm(      CblasColMajor, CblasNoTrans, CblasTrans,3,3,2  ,1,    A,3,  B,3,  2   ,C,3  );
+....
+
+===== Eigen
+
+Header only linear algebra library with a mainline Buildroot package:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_EIGEN=y'
+./build-userland --package eigen -- userland/libs/eigen/hello.cpp
+....
+
+Just create an array and print it:
+
+....
+./run --eval-after './libs/eigen/hello.out'
+....
+
+Output:
+
+....
+  3  -1
+2.5 1.5
+....
+
+Source: link:userland/libs/eigen/hello.cpp[]
+
+This example just creates a matrix and prints it out.
+
+Tested on: https://github.com/cirosantilli/linux-kernel-module-cheat/commit/a4bdcf102c068762bb1ef26c591fcf71e5907525[a4bdcf102c068762bb1ef26c591fcf71e5907525]
+
+===== PARSEC benchmark
+
+We have ported parts of the http://parsec.cs.princeton.edu[PARSEC benchmark] for cross compilation at: https://github.com/cirosantilli/parsec-benchmark See the documentation on that repo to find out which benchmarks have been ported. Some of the benchmarks were are segfaulting, they are documented in that repo.
+
+There are two ways to run PARSEC with this repo:
+
+* <<parsec-benchmark-without-parsecmgmt,without `pasecmgmt`>>, most likely what you want
+* <<parsec-benchmark-with-parsecmgmt,with `pasecmgmt`>>
+
+====== PARSEC benchmark without parsecmgmt
+
+....
+./build --arch arm --download-dependencies gem5-buildroot parsec-benchmark
+./build-buildroot --arch arm --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y'
+./run --arch arm --emulator gem5
+....
+
+Once inside the guest, launch one of the `test` input sized benchmarks manually as in:
+
+....
+cd /parsec/ext/splash2x/apps/fmm/run
+../inst/arm-linux.gcc/bin/fmm 1 < input_1
+....
+
+To find run out how to run many of the benchmarks, have a look at the `test.sh` script of the `parse-benchmark` repo.
+
+From the guest, you can also run it as:
+
+....
+cd /parsec
+./test.sh
+....
+
+but this might be a bit time consuming in gem5.
+
+====== PARSEC change the input size
+
+Running a benchmark of a size different than `test`, e.g. `simsmall`, requires a rebuild with:
+
+....
+./build-buildroot \
+  --arch arm \
+  --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y' \
+  --config 'BR2_PACKAGE_PARSEC_BENCHMARK_INPUT_SIZE="simsmall"' \
+  -- parsec_benchmark-reconfigure \
+;
+....
+
+Large input may also require tweaking:
+
+* <<br2_target_rootfs_ext2_size>> if the unpacked inputs are large
+* <<memory-size>>, unless you want to meet the OOM killer, which is admittedly kind of fun
+
+`test.sh` only contains the run commands for the `test` size, and cannot be used for `simsmall`.
+
+The easiest thing to do, is to https://superuser.com/questions/231002/how-can-i-search-within-the-output-buffer-of-a-tmux-shell/1253137#1253137[scroll up on the host shell] after the build, and look for a line of type:
+
+....
+Running /root/linux-kernel-module-cheat/out/aarch64/buildroot/build/parsec-benchmark-custom/ext/splash2x/apps/ocean_ncp/inst/aarch64-linux.gcc/bin/ocean_ncp -n2050 -p1 -e1e-07 -r20000 -t28800
+....
+
+and then tweak the command found in `test.sh` accordingly.
+
+Yes, we do run the benchmarks on host just to unpack / generate inputs. They are expected fail to run since they were build for the guest instead of host, including for x86_64 guest which has a different interpreter than the host's (see `file myexecutable`).
+
+The rebuild is required because we unpack input files on the host.
+
+Separating input sizes also allows to create smaller images when only running the smaller benchmarks.
+
+This limitation exists because `parsecmgmt` generates the input files just before running via the Bash scripts, but we can't run `parsecmgmt` on gem5 as it is too slow!
+
+One option would be to do that inside the guest with QEMU.
+
+Also, we can't generate all input sizes at once, because many of them have the same name and would overwrite one another...
+
+PARSEC simply wasn't designed with non native machines in mind...
+
+====== PARSEC benchmark with parsecmgmt
+
+Most users won't want to use this method because:
+
+* running the `parsecmgmt` Bash scripts takes forever before it ever starts running the actual benchmarks on gem5
++
+Running on QEMU is feasible, but not the main use case, since QEMU cannot be used for performance measurements
+* it requires putting the full `.tar` inputs on the guest, which makes the image twice as large (1x for the `.tar`, 1x for the unpacked input files)
+
+It would be awesome if it were possible to use this method, since this is what Parsec supports officially, and so:
+
+* you don't have to dig into what raw command to run
+* there is an easy way to run all the benchmarks in one go to test them out
+* you can just run any of the benchmarks that you want
+
+but it simply is not feasible in gem5 because it takes too long.
+
+If you still want to run this, try it out with:
+
+....
+./build-buildroot \
+  --arch aarch64 \
+  --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y' \
+  --config 'BR2_PACKAGE_PARSEC_BENCHMARK_PARSECMGMT=y' \
+  --config 'BR2_TARGET_ROOTFS_EXT2_SIZE="3G"' \
+  -- parsec_benchmark-reconfigure \
+;
+....
+
+And then you can run it just as you would on the host:
+
+....
+cd /parsec/
+bash
+. env.sh
+parsecmgmt -a run -p splash2x.fmm -i test
+....
+
+====== PARSEC uninstall
+
+If you want to remove PARSEC later, Buildroot doesn't provide an automated package removal mechanism as mentioned at: xref:remove-buildroot-packages[xrefstyle=full], but the following procedure should be satisfactory:
+
+....
+rm -rf \
+  "$(./getvar buildroot_download_dir)"/parsec-* \
+  "$(./getvar buildroot_build_dir)"/build/parsec-* \
+  "$(./getvar buildroot_build_dir)"/build/packages-file-list.txt \
+  "$(./getvar buildroot_build_dir)"/images/rootfs.* \
+  "$(./getvar buildroot_build_dir)"/target/parsec-* \
+;
+./build-buildroot --arch arm
+....
+
+====== PARSEC benchmark hacking
+
+If you end up going inside link:submodules/parsec-benchmark[] to hack up the benchmark (you will!), these tips will be helpful.
+
+Buildroot was not designed to deal with large images, and currently cross rebuilds are a bit slow, due to some image generation and validation steps.
+
+A few workarounds are:
+
+* develop in host first as much as you can. Our PARSEC fork supports it.
++
+If you do this, don't forget to do a:
++
+....
+cd "$(./getvar parsec_source_dir)"
+git clean -xdf .
+....
+before going for the cross compile build.
++
+* patch Buildroot to work well, and keep cross compiling all the way. This should be totally viable, and we should do it.
++
+Don't forget to explicitly rebuild PARSEC with:
++
+....
+./build-buildroot \
+  --arch arm \
+  --config 'BR2_PACKAGE_PARSEC_BENCHMARK=y' \
+  -- parsec_benchmark-reconfigure \
+;
+....
++
+You may also want to test if your patches are still functionally correct inside of QEMU first, which is a faster emulator.
+* sell your soul, and compile natively inside the guest. We won't do this, not only because it is evil, but also because Buildroot explicitly does not support it: https://buildroot.org/downloads/manual/manual.html#faq-no-compiler-on-target ARM employees have been known to do this: https://github.com/arm-university/arm-gem5-rsk/blob/aa3b51b175a0f3b6e75c9c856092ae0c8f2a7cdc/parsec_patches/qemu-patch.diff
+
+=== gem5 kernel command line parameters
+
+Analogous <<kernel-command-line-parameters,to QEMU>>:
+
+....
+./run --arch arm --kernel-cli 'init=/lkmc/linux/poweroff.out' --emulator gem5
+....
+
+Internals: when we give `--command-line=` to gem5, it overrides default command lines, including some mandatory ones which are required to boot properly.
+
+Our run script hardcodes the require options in the default `--command-line` and appends extra options given by `-e`.
+
+To find the default options in the first place, we removed `--command-line` and ran:
+
+....
+./run --arch arm --emulator gem5
+....
+
+and then looked at the line of the Linux kernel that starts with:
+
+....
+Kernel command line:
+....
+
+[[gem5-gdb]]
+=== gem5 GDB step debug
+
+==== gem5 GDB step debug kernel
+Analogous <<gdb,to QEMU>>, on the first shell:
+
+....
+./run --arch arm --emulator gem5 --gdb-wait
+....
+
+On the second shell:
+
+....
+./run-gdb --arch arm --emulator gem5
+....
+
+On a third shell:
+
+....
+./gem5-shell
+....
+
+When you want to break, just do a `Ctrl-C` on GDB shell, and then `continue`.
+
+And we now see the boot messages, and then get a shell. Now try the `./count.sh` procedure described for QEMU at: xref:gdb-step-debug-kernel-post-boot[xrefstyle=full].
+
+==== gem5 GDB step debug userland process
+
+We are unable to use `gdbserver` because of networking as mentioned at: xref:gem5-host-to-guest-networking[xrefstyle=full]
+
+The alternative is to do as in <<gdb-step-debug-userland-processes>>.
+
+Next, follow the exact same steps explained at <<gdb-step-debug-userland-non-init-without-gdb-wait>>, but passing `--emulator gem5` to every command as usual.
+
+But then TODO (I'll still go crazy one of those days): for `arm`, while debugging `./linux/myinsmod.out hello.ko`, after then line:
+
+....
+23     if (argc < 3) {
+24         params = "";
+....
+
+I press `n`, it just runs the program until the end, instead of stopping on the next line of execution. The module does get inserted normally.
+
+TODO:
+
+....
+./run-gdb --arch arm --emulator gem5 --userland gem5-1.0/gem5/util/m5/m5 main
+....
+
+breaks when `m5` is run on guest, but does not show the source code.
+
+=== gem5 checkpoint
+
+Analogous to QEMU's <<snapshot>>, but better since it can be started from inside the guest, so we can easily checkpoint after a specific guest event, e.g. just before `init` is done.
+
+Documentation: http://gem5.org/Checkpoints
+
+....
+./run --arch arm --emulator gem5
+....
+
+In the guest, wait for the boot to end and run:
+
+....
+m5 checkpoint
+....
+
+where <<m5>> is a guest utility present inside the gem5 tree which we cross-compiled and installed into the guest.
+
+To restore the checkpoint, kill the VM and run:
+
+....
+./run --arch arm --emulator gem5 --gem5-restore 1
+....
+
+The `--gem5-restore` option restores the checkpoint that was created most recently.
+
+Let's create a second checkpoint to see how it works, in guest:
+
+....
+date >f
+m5 checkpoint
+....
+
+Kill the VM, and try it out:
+
+....
+./run --arch arm --emulator gem5 --gem5-restore 1
+....
+
+Here we use `--gem5-restore 1` again, since the second snapshot we took is now the most recent one
+
+Now in the guest:
+
+....
+cat f
+....
+
+contains the `date`. The file `f` wouldn't exist had we used the first checkpoint with `--gem5-restore 2`, which is the second most recent snapshot taken.
+
+If you automate things with <<kernel-command-line-parameters>> as in:
+
+....
+./run --arch arm --eval 'm5 checkpoint;m5 resetstats;dhrystone 1000;m5 exit' --emulator gem5
+....
+
+Then there is no need to pass the kernel command line again to gem5 for replay:
+
+....
+./run --arch arm --emulator gem5 --gem5-restore 1
+....
+
+since boot has already happened, and the parameters are already in the RAM of the snapshot.
+
+==== gem5 checkpoint internals
+
+Checkpoints are stored inside the <<m5out-directory>> at:
+
+....
+"$(./getvar --emulator gem5 m5out_dir)/cpt.<checkpoint-time>"
+....
+
+where `<checkpoint-time>` is the cycle number at which the checkpoint was taken.
+
+`fs.py` exposes the `-r N` flag to restore checkpoints, which N-th checkpoint with the largest `<checkpoint-time>`: https://github.com/gem5/gem5/blob/e02ec0c24d56bce4a0d8636a340e15cd223d1930/configs/common/Simulation.py#L118
+
+However, that interface is bad because if you had taken previous checkpoints, you have no idea what `N` to use, unless you memorize which checkpoint was taken at which cycle.
+
+Therefore, just use our superior `--gem5-restore` flag, which uses directory timestamps to determine which checkpoint you created most recently.
+
+The `-r N` integer value is just pure `fs.py` sugar, the backend at `m5.instantiate` just takes the actual tracepoint directory path as input.
+
+[[gem5-restore-new-script]]
+==== gem5 checkpoint restore and run a different script
+
+You want to automate running several tests from a single pristine post-boot state.
+
+The problem is that boot takes forever, and after the checkpoint, the memory and disk states are fixed, so you can't for example:
+
+* hack up an existing rc script, since the disk is fixed
+* inject new kernel boot command line options, since those have already been put into memory by the bootloader
+
+There is however a few loopholes, <<m5-readfile>> being the simplest, as it reads whatever is present on the host.
+
+So we can do it like:
+
+....
+# Boot, checkpoint and exit.
+printf 'echo "setup run";m5 exit' > "$(./getvar gem5_readfile_file)"
+./run --emulator gem5 --eval 'm5 checkpoint;m5 readfile > a.sh;sh a.sh'
+
+# Restore and run the first benchmark.
+printf 'echo "first benchmark";m5 exit' > "$(./getvar gem5_readfile_file)"
+./run --emulator gem5 --gem5-restore 1
+
+# Restore and run the second benchmark.
+printf 'echo "second benchmark";m5 exit' > "$(./getvar gem5_readfile_file)"
+./run --emulator gem5 --gem5-restore 1
+
+# If something weird happened, create an interactive shell to examine the system.
+printf 'sh' > "$(./getvar gem5_readfile_file)"
+./run --emulator gem5 --gem5-restore 1
+....
+
+Since this is such a common setup, we provide the following helpers for this operation:
+
+* link:rootfs_overlay/lkmc/gem5.sh[]. This script is analogous to gem5's in-tree https://github.com/gem5/gem5/blob/2b4b94d0556c2d03172ebff63f7fc502c3c26ff8/configs/boot/hack_back_ckpt.rcS[hack_back_ckpt.rcS], but with less noise.
+* `./run --gem5-readfile` is a convenient way to set the `m5 readfile`
+
+Their usage us exemplified at <<gem5-run-benchmark>>.
+
+Other loophole possibilities include:
+
+* <<9p>>
+* <<secondary-disk>>
+* `expect` as mentioned at: https://stackoverflow.com/questions/7013137/automating-telnet-session-using-bash-scripts
++
+....
+#!/usr/bin/expect
+spawn telnet localhost 3456
+expect "# $"
+send "pwd\r"
+send "ls /\r"
+send "m5 exit\r"
+expect eof
+....
++
+This is ugly however as it is not deterministic.
+
+https://www.mail-archive.com/gem5-users@gem5.org/msg15233.html
+
+==== gem5 restore checkpoint with a different CPU
+
+gem5 can switch to a different CPU model when restoring a checkpoint.
+
+A common combo is to boot Linux with a fast CPU, make a checkpoint and then replay the benchmark of interest with a slower CPU.
+
+An illustrative interactive run:
+
+....
+./run --arch arm --emulator gem5
+....
+
+In guest:
+
+....
+m5 checkpoint
+....
+
+And then restore the checkpoint with a different CPU:
+
+....
+./run --arch arm --emulator gem5 --gem5-restore 1 -- --caches --restore-with-cpu=HPI
+....
+
+=== Pass extra options to gem5
+
+Remember that in the gem5 command line, we can either pass options to the script being run as in:
+
+....
+build/X86/gem5.opt configs/examples/fs.py --some-option
+....
+
+or to the gem5 executable itself:
+
+....
+build/X86/gem5.opt --some-option configs/examples/fs.py
+....
+
+Pass options to the script in our setup use:
+
+* get help:
++
+....
+./run --emulator gem5 -- -h
+....
+* boot with the more detailed and slow `HPI` CPU model:
++
+....
+./run --arch arm --emulator gem5 -- --caches --cpu-type=HPI
+....
+
+To pass options to the `gem5` executable we expose the `--gem5-exe-args` option:
+
+* get help:
++
+....
+./run --gem5-exe-args='-h' --emulator gem5
+....
+
+=== m5ops
+
+m5ops are magic instructions which lead gem5 to do magic things, like quitting or dumping stats.
+
+Documentation: http://gem5.org/M5ops
+
+There are two main ways to use m5ops:
+
+* <<m5>>
+* <<m5ops-instructions>>
+
+`m5` is convenient if you only want to take snapshots before or after the benchmark, without altering its source code. It uses the <<m5ops-instructions>> as its backend.
+
+`m5` cannot should / should not be used however:
+
+* in bare metal setups
+* when you want to call the instructions from inside interest points of your benchmark. Otherwise you add the syscall overhead to the benchmark, which is more intrusive and might affect results.
++
+Why not just hardcode some <<m5ops-instructions>> as in our example instead, since you are going to modify the source of the benchmark anyways?
+
+==== m5
+
+`m5` is a guest command line utility that is installed and run on the guest, that serves as a CLI front-end for the <<m5ops>>
+
+Its source is present in the gem5 tree: https://github.com/gem5/gem5/blob/6925bf55005c118dc2580ba83e0fa10b31839ef9/util/m5/m5.c
+
+It is possible to guess what most tools do from the corresponding <<m5ops>>, but let's at least document the less obvious ones here.
+
+===== m5 exit
+
+End the simulation.
+
+Sane Python scripts will exit gem5 with status 0, which is what `fs.py` does.
+
+===== m5 fail
+
+End the simulation with a failure exit event:
+
+....
+m5 fail 1
+....
+
+Sane Python scripts would use that as the exit status of gem5, which would be useful for testing purposes, but `fs.py` at 200281b08ca21f0d2678e23063f088960d3c0819 just prints an error message:
+
+....
+Simulated exit code not 0! Exit code is 1
+....
+
+and exits with status 0.
+
+We then parse that string ourselves in link:run[] and exit with the correct status...
+
+TODO: it used to be like that, but it actually got changed to just print the message. Why? https://gem5-review.googlesource.com/c/public/gem5/+/4880
+
+`m5 fail` is just a superset of `m5 exit`, which is just:
+
+....
+m5 fail 0
+....
+
+as can be seen from the source: https://github.com/gem5/gem5/blob/50a57c0376c02c912a978c4443dd58caebe0f173/src/sim/pseudo_inst.cc#L303
+
+===== m5 writefile
+
+Send a guest file to the host. <<9p>> is a more advanced alternative.
+
+Guest:
+
+....
+echo mycontent > myfileguest
+m5 writefile myfileguest myfilehost
+....
+
+Host:
+
+....
+cat "$(./getvar --arch aarch64 --emulator gem5 m5out_dir)/myfilehost"
+....
+
+Does not work for subdirectories, gem5 crashes:
+
+....
+m5 writefile myfileguest mydirhost/myfilehost
+....
+
+===== m5 readfile
+
+Read a host file pointed to by the `fs.py --script` option to stdout.
+
+https://stackoverflow.com/questions/49516399/how-to-use-m5-readfile-and-m5-execfile-in-gem5/49538051#49538051
+
+Host:
+
+....
+date > "$(./getvar gem5_readfile_file)"
+....
+
+Guest:
+
+....
+m5 readfile
+....
+
+Outcome: date shows on guest.
+
+===== m5 initparam
+
+Ermm, just another <<m5-readfile>> that only takes integers and only from CLI options? Is this software so redundant?
+
+Host:
+
+....
+./run --emulator gem5 --gem5-restore 1 -- --initparam 13
+./run --emulator gem5 --gem5-restore 1 -- --initparam 42
+....
+
+Guest:
+
+....
+m5 initparm
+....
+
+Outputs the given paramter.
+
+===== m5 execfile
+
+Trivial combination of `m5 readfile` + execute the script.
+
+Host:
+
+....
+printf '#!/bin/sh
+echo asdf
+' > "$(./getvar gem5_readfile_file)"
+....
+
+Guest:
+
+....
+touch /tmp/execfile
+chmod +x /tmp/execfile
+m5 execfile
+....
+
+Outcome:
+
+....
+adsf
+....
+
+==== m5ops instructions
+
+gem5 allocates some magic instructions on unused instruction encodings for convenient guest instrumentation.
+
+Those instructions are exposed through the <<m5>> in tree executable.
+
+To make things simpler to understand, you can play around with our own minimized educational `m5` subset link:userland/c/m5ops.c[].
+
+The instructions used by `./c/m5ops.out` are present in link:lkmc/m5ops.h[] in a very simple to understand and reuse inline assembly form.
+
+To use that file, first rebuild `m5ops.out` with the m5ops instructions enabled and install it on the root filesystem:
+
+....
+./build-userland \
+  --arch aarch64 \
+  --ccflags='-DLKMC_M5OPS_ENABLE=1' \
+  --force-rebuild \
+  --static \
+  userland/c/m5ops.c \
+;
+./build-buildroot --arch aarch64
+....
+
+We don't enable `-DLKMC_M5OPS_ENABLE=1` by default on userland executables because we try to use a single image for both gem5, QEMU and <<userland-setup-getting-started-natively,native>>, and those instructions would break the latter two. We enable it in the <<baremetal-setup>> by default since we already have different images for QEMU and gem5 there.
+
+Then, from inside <<gem5-buildroot-setup>>, test it out with:
+
+....
+# checkpoint
+./c/m5ops.out c
+
+# dumpstats
+./c/m5ops.out d
+
+# exit
+./c/m5ops.out e
+
+# dump resetstats
+./c/m5ops.out r
+....
+
+In theory, the cleanest way to add m5ops to your benchmarks would be to do exactly what the `m5` tool does:
+
+* include https://github.com/gem5/gem5/blob/05c4c2b566ce351ab217b2bd7035562aa7a76570/include/gem5/asm/generic/m5ops.h[`include/gem5/asm/generic/m5ops.h`]
+* link with the `.o` file under `util/m5` for the correct arch, e.g. `m5op_arm_A64.o` for aarch64.
+
+However, I think it is usually not worth the trouble of hacking up the build system of the benchmark to do this, and I recommend just hardcoding in a few raw instructions here and there, and managing it with version control + `sed`.
+
+Bibliography:
+
+* https://stackoverflow.com/questions/56506154/how-to-analyze-only-interest-area-in-source-code-by-using-gem5/56506419#56506419
+* https://www.mail-archive.com/gem5-users@gem5.org/msg15418.html
+
+===== m5ops instructions interface
+
+Let's study how <<m5>> uses them:
+
+* https://github.com/gem5/gem5/blob/05c4c2b566ce351ab217b2bd7035562aa7a76570/include/gem5/asm/generic/m5ops.h[`include/gem5/asm/generic/m5ops.h`]: defines the magic constants that represent the instructions
+* https://github.com/gem5/gem5/blob/05c4c2b566ce351ab217b2bd7035562aa7a76570/util/m5/m5op_arm_A64.S[`util/m5/m5op_arm_A64.S`]: use the magic constants that represent the instructions using C preprocessor magic
+* https://github.com/gem5/gem5/blob/05c4c2b566ce351ab217b2bd7035562aa7a76570/util/m5/m5.c[`util/m5/m5.c`]: the actual executable. Gets linked to `m5op_arm_A64.S` which defines a function for each m5op.
+
+We notice that there are two different implementations for each arch:
+
+* magic instructions, which don't exist in the corresponding arch
+* magic memory addresses on a given page
+
+TODO: what is the advantage of magic memory addresses? Because you have to do more setup work by telling the kernel never to touch the magic page. For the magic instructions, the only thing that could go wrong is if you run some crazy kind of fuzzing workload that generates random instructions.
+
+Then, in aarch64 magic instructions for example, the lines:
+
+....
+.macro  m5op_func, name, func, subfunc
+        .globl \name
+        \name:
+        .long 0xff000110 | (\func << 16) | (\subfunc << 12)
+        ret
+....
+
+define a simple function function for each m5op. Here we see that:
+
+* `0xff000110` is a base mask for the magic non-existing instruction
+* `\func` and `\subfunc` are OR-applied on top of the base mask, and define m5op this is.
++
+Those values will loop over the magic constants defined in `m5ops.h` with the deferred preprocessor idiom.
++
+For example, `exit` is `0x21` due to:
++
+....
+#define M5OP_EXIT               0x21
+....
+
+Finally, `m5.c` calls the defined functions as in:
+
+....
+m5_exit(ints[0]);
+....
+
+Therefore, the runtime "argument" that gets passed to the instruction, e.g. the delay in ticks until the exit for `m5 exit`, gets passed directly through the https://en.wikipedia.org/wiki/Calling_convention#ARM_(A64)[aarch64 calling convention].
+
+Keep in mind that for all archs, `m5.c` does the calls with 64-bit integers:
+
+....
+uint64_t ints[2] = {0,0};
+parse_int_args(argc, argv, ints, argc);
+m5_fail(ints[1], ints[0]);
+....
+
+Therefore, for example:
+
+* aarch64 uses `x0` for the first argument and `x1` for the second, since each is 64 bits log already
+* arm uses `r0` and `r1` for the first argument, and `r2` and `r3` for the second, since each register is only 32 bits long
+
+That convention specifies that `x0` to `x7` contain the function arguments, so `x0` contains the first argument, and `x1` the second.
+
+In our `m5ops` example, we just hardcode everything in the assembly one-liners we are producing.
+
+We ignore the `\subfunc` since it is always 0 on the ops that interest us.
+
+===== m5op annotations
+
+`include/gem5/asm/generic/m5ops.h` also describes some annotation instructions.
+
+What they mean: https://stackoverflow.com/questions/50583962/what-are-the-gem5-annotations-mops-magic-instructions-and-how-to-use-them
+
+=== gem5 arm Linux kernel patches
+
+https://gem5.googlesource.com/arm/linux/ contains an ARM Linux kernel forks with a few gem5 specific Linux kernel patches on top of mainline created by ARM Holdings on top of a few upstream kernel releases.
+
+The patches are optional: the vanilla kernel does boot. But they add some interesting gem5-specific optimizations, instrumentations and device support.
+
+The patches also <<notable-alternate-gem5-kernel-configs,add defconfigs>> that are known to work well with gem5.
+
+E.g. for arm v4.9 there is: https://gem5.googlesource.com/arm/linux/+/917e007a4150d26a0aa95e4f5353ba72753669c7/arch/arm/configs/gem5_defconfig[].
+
+In order to use those patches and their associated configs, and, we recommend using <<linux-kernel-build-variants>> as:
+
+....
+git -C "$(./getvar linux_source_dir)" fetch https://gem5.googlesource.com/arm/linux gem5/v4.15:gem5/v4.15
+git -C "$(./getvar linux_source_dir)" checkout gem5/v4.15
+./build-linux \
+  --arch aarch64 \
+  --custom-config-file-gem5 \
+  --linux-build-id gem5-v4.15 \
+;
+git -C "$(./getvar linux_source_dir)" checkout -
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --linux-build-id gem5-v4.15 \
+;
+....
+
+QEMU also boots that kernel successfully:
+
+....
+./run \
+  --arch aarch64 \
+  --linux-build-id gem5-v4.15 \
+;
+....
+
+but glibc kernel version checks make init fail with:
+
+....
+FATAL: kernel too old
+....
+
+because glibc was built to expect a newer Linux kernel as shown at: xref:fatal-kernel-too-old[xrefstyle=full]. Your choices to sole this are:
+
+* see if there is a more recent gem5 kernel available, or port your patch of interest to the newest kernel
+* modify this repo to use <<libc-choice,uClibc>>, which is not hard because of Buildroot
+* patch glibc to remove that check, which is easy because glibc is in a submodule of this repo
+
+It is obviously not possible to understand what they actually do from their commit message, so let's explain them one by one here as we understand them:
+
+* `drm: Add component-aware simple encoder` allows you to see images through VNC, see: xref:gem5-graphic-mode[xrefstyle=full]
+* `gem5: Add support for gem5's extended GIC mode` adds support for more than 8 cores, see: xref:gem5-arm-full-system-with-more-than-8-cores[xrefstyle=full]
+
+Tested on 649d06d6758cefd080d04dc47fd6a5a26a620874 + 1.
+
+==== gem5 arm Linux kernel patches boot speedup
+
+We have observed that with the kernel patches, boot is 2x faster, falling from 1m40s to 50s.
+
+With https://stackoverflow.com/questions/49797246/how-to-monitor-for-how-much-time-each-line-of-stdout-was-the-last-output-line-in/49797547#49797547[`ts`], we see that a large part of the difference is at the message:
+
+....
+clocksource: Switched to clocksource arch_sys_counter
+....
+
+which takes 4s on the patched kernel, and 30s on the unpatched one! TODO understand why, especially if it is a config difference, or if it actually comes from a patch.
+
+=== m5out directory
+
+When you run gem5, it generates an `m5out` directory at:
+
+....
+echo $(./getvar --arch arm --emulator gem5 m5out_dir)"
+....
+
+The location of that directory can be set with `./gem5.opt -d`, and defaults to `./m5out`.
+
+The files in that directory contains some very important information about the run, and you should become familiar with every one of them.
+
+[[gem5-m5out-system-terminal-file]]
+==== gem5 m5out/system.terminal file
+
+Contains UART output, both from the Linux kernel or from the baremetal system.
+
+Can also be seen live on <<m5term>>.
+
+[[gem5-m5out-stats-txt-file]]
+==== gem5 m5out/stats.txt file
+
+This file contains important statistics about the run:
+
+....
+cat "$(./getvar --arch aarch64 m5out_dir)/stats.txt"
+....
+
+Whenever we run `m5 dumpstats` or `m5 exit`, a section with the following format is added to that file:
+
+....
+---------- Begin Simulation Statistics ----------
+[the stats]
+---------- End Simulation Statistics   ----------
+....
+
+That file contains several important execution metrics, e.g. number of cycles and several types of cache misses:
+
+....
+system.cpu.numCycles
+system.cpu.dtb.inst_misses
+system.cpu.dtb.inst_hits
+....
+
+For x86, it is interesting to try and correlate `numCycles` with:
+
+===== gem5 only dump selected stats
+
+TODO
+
+https://stackoverflow.com/questions/52014953/how-to-dump-only-a-single-or-certain-selected-stats-in-gem5
+
+To prevent the stats file from becoming humongous.
+
+==== gem5 config.ini
+
+The `m5out/config.ini` file, contains a very good high level description of the system:
+
+....
+less $(./getvar --arch arm --emulator gem5 m5out_dir)"
+....
+
+That file contains a tree representation of the system, sample excerpt:
+
+....
+[root]
+type=Root
+children=system
+full_system=true
+
+[system]
+type=ArmSystem
+children=cpu cpu_clk_domain
+auto_reset_addr_64=false
+semihosting=Null
+
+[system.cpu]
+type=AtomicSimpleCPU
+children=dstage2_mmu dtb interrupts isa istage2_mmu itb tracer
+branchPred=Null
+
+[system.cpu_clk_domain]
+type=SrcClockDomain
+clock=500
+....
+
+Each node has:
+
+* a list of child nodes, e.g. `system` is a child of `root`, and both `cpu` and `cpu_clk_domain` are children of `system`
+* a list of parameters, e.g. `system.semihosting` is `Null`, which means that <<semihosting>> was turned off
+** the `type` parameter shows is present on every node, and it maps to a `Python` object that inherits from `SimObject`.
++
+For example, `AtomicSimpleCPU` maps is defined at https://github.com/gem5/gem5/blob/05c4c2b566ce351ab217b2bd7035562aa7a76570/src/cpu/simple/AtomicSimpleCPU.py#L45[src/cpu/simple/AtomicSimpleCPU.py].
+
+You can also get a simplified graphical view of the tree with:
+
+....
+xdg-open "$(./getvar --arch arm --emulator gem5 m5out_dir)/config.dot.pdf"
+....
+
+Modifying the `config.ini` file manually does nothing since it gets overwritten every time.
+
+Set custom configs with the `--param` option of `fs.py`, e.g. we can make gem5 wait for GDB to connect with:
+
+....
+fs.py --param 'system.cpu[0].wait_for_remote_gdb = True'
+....
+
+More complex settings involving new classes however require patching the config files, although it is easy to hack this up. See for example: link:patches/manual/gem5-semihost.patch[].
+
+=== m5term
+
+We use the `m5term` in-tree executable to connect to the terminal instead of a direct `telnet`.
+
+If you use `telnet` directly, it mostly works, but certain interactive features don't, e.g.:
+
+* up and down arrows for history navigation
+* tab to complete paths
+* `Ctrl-C` to kill processes
+
+TODO understand in detail what `m5term` does differently than `telnet`.
+
+=== gem5 Python scripts without rebuild
+
+We have made a crazy setup that allows you to just `cd` into `submodules/gem5`, and edit Python scripts directly there.
+
+This is not normally possible with Buildroot, since normal Buildroot packages first copy files to the output directory (`$(./getvar -a <arch> buildroot_build_build_dir)/<pkg>`), and then build there.
+
+So if you modified the Python scripts with this setup, you would still need to `./build` to copy the modified files over.
+
+For gem5 specifically however, we have hacked up the build so that we `cd` into the `submodules/gem5` tree, and then do an https://stackoverflow.com/questions/54343515/how-to-build-gem5-out-of-tree/54343516#54343516[out of tree] build to `out/common/gem5`.
+
+Another advantage of this method is the we factor out the `arm` and `aarch64` gem5 builds which are identical and large, as well as the smaller arch generic pieces.
+
+Using Buildroot for gem5 is still convenient because we use it to:
+
+* to cross build `m5` for us
+* check timestamps and skip the gem5 build when it is not requested
+
+The out of build tree is required, because otherwise Buildroot would copy the output build of all archs to each arch directory, resulting in `arch^2` build copies, which is significant.
+
+=== gem5 fs_bigLITTLE
+
+By default, we use `configs/example/fs.py` script.
+
+The `--gem5-script biglittle` option enables the alternative `configs/example/arm/fs_bigLITTLE.py` script instead.
+
+First apply:
+
+....
+patch -d "$(./getvar gem5_source_dir)" -p 1 < patches/manual/gem5-biglittle.patch
+....
+
+then:
+
+....
+./run --arch aarch64 --emulator gem5 --gem5-script biglittle
+....
+
+Advantages over `fs.py`:
+
+* more representative of mobile ARM SoCs, which almost always have  big little cluster
+* simpler than `fs.py`, and therefore easier to understand and modify
+
+Disadvantages over `fs.py`:
+
+* only works for ARM, not other archs
+* not as many configuration options as `fs.py`, many things are hardcoded
+
+We setup 2 big and 2 small CPUs, but `cat /proc/cpuinfo` shows 4 identical CPUs instead of 2 of two different types, likely because gem5 does not expose some informational register much like the caches: https://www.mail-archive.com/gem5-users@gem5.org/msg15426.html <<gem5-config-ini>> does show that the two big ones are `DerivO3CPU` and the small ones are `MinorCPU`.
+
+TODO: why is the `--dtb` required despite `fs_bigLITTLE.py` having a DTB generation capability? Without it, nothing shows on terminal, and the simulation terminates with `simulate() limit reached  @  18446744073709551615`. The magic `vmlinux.vexpress_gem5_v1.20170616` works however without a DTB.
+
+Tested on: https://github.com/cirosantilli/linux-kernel-module-cheat/commit/18c1c823feda65f8b54cd38e261c282eee01ed9f[18c1c823feda65f8b54cd38e261c282eee01ed9f]
+
+=== gem5 unit tests
+
+https://stackoverflow.com/questions/52279971/how-to-run-the-gem5-unit-tests
+
+These are just very small GTest tests that test a single class in isolation, they don't run any executables.
+
+Build the unit tests and run them:
+
+....
+./build-gem5 --unit-tests
+....
+
+Running individual unit tests is not yet exposed, but it is easy to do: while running the full tests, GTest prints each test command being run, e.g.:
+
+....
+/path/to/build/ARM/base/circlebuf.test.opt --gtest_output=xml:/path/to/build/ARM/unittests.opt/base/circlebuf.test.xml
+[==========] Running 4 tests from 1 test case.
+[----------] Global test environment set-up.
+[----------] 4 tests from CircleBufTest
+[ RUN      ] CircleBufTest.BasicReadWriteNoOverflow
+[       OK ] CircleBufTest.BasicReadWriteNoOverflow (0 ms)
+[ RUN      ] CircleBufTest.SingleWriteOverflow
+[       OK ] CircleBufTest.SingleWriteOverflow (0 ms)
+[ RUN      ] CircleBufTest.MultiWriteOverflow
+[       OK ] CircleBufTest.MultiWriteOverflow (0 ms)
+[ RUN      ] CircleBufTest.PointerWrapAround
+[       OK ] CircleBufTest.PointerWrapAround (0 ms)
+[----------] 4 tests from CircleBufTest (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 4 tests from 1 test case ran. (0 ms total)
+[  PASSED  ] 4 tests.
+....
+
+so you can just copy paste the command.
+
+Building individual tests is possible with:
+
+....
+./build-gem5 --unit-test base/circlebuf.test
+....
+
+This does not run the test however.
+
+Note that the command and it's corresponding results don't need to show consecutively on stdout because tests are run in parallel. You just have to match them based on the class name `CircleBufTest` to the file `circlebuf.test.cpp`.
+
+Running the larger regression tests is exposed with:
+
+....
+./build-gem5 --regression-test quick/fs
+....
+
+but TODO: those require magic blobs on `M5_PATH` that we don't currently automate.
+
+=== gem5 simulate() limit reached
+
+This error happens when the following instruction limits are reached:
+
+....
+system.cpu[0].max_insts_all_threads
+system.cpu[0].max_insts_any_thread
+....
+
+If the parameter is not set, it defaults to `0`, which is magic and means the huge maximum value of `uint64_t`: 0xFFFFFFFFFFFFFFFF, which in practice would require a very long simulation if at least one CPU were live.
+
+So this usually means all CPUs are in a sleep state, and no events are scheduled in the future, which usually indicates a bug in either gem5 or guest code, leading gem5 to blow up.
+
+Still, fs.py at gem5 08c79a194d1a3430801c04f37d13216cc9ec1da3 does not exit with non-zero status due to this... and so we just parse it out just as for <<m5-fail>>...
+
+A trivial and very direct way to see message would be:
+
+....
+./run \
+  --emulator gem5 \
+  --static \
+  --userland \userland/arch/x86_64/freestanding/linux/hello.S \
+  --trace-insts-stdout \
+  -- \
+  --param 'system.cpu[0].max_insts_all_threads = 3' \
+;
+....
+
+which as of lkmc 402059ed22432bb351d42eb10900e5a8e06aa623 runs only the first three instructions and quits!
+
+....
+info: Entering event queue @ 0.  Starting simulation...
+      0: system.cpu A0 T0 : @asm_main_after_prologue    : mov   rdi, 0x1
+      0: system.cpu A0 T0 : @asm_main_after_prologue.0  :   MOV_R_I : limm   rax, 0x1 : IntAlu :  D=0x0000000000000001  flags=(IsInteger|IsMicroop|IsLastMicroop|IsFirstMicroop)
+   1000: system.cpu A0 T0 : @asm_main_after_prologue+7    : mov rdi, 0x1
+   1000: system.cpu A0 T0 : @asm_main_after_prologue+7.0  :   MOV_R_I : limm   rdi, 0x1 : IntAlu :  D=0x0000000000000001  flags=(IsInteger|IsMicroop|IsLastMicroop|IsFirstMicroop)
+   2000: system.cpu A0 T0 : @asm_main_after_prologue+14    : lea        rsi, DS:[rip + 0x19]
+   2000: system.cpu A0 T0 : @asm_main_after_prologue+14.0  :   LEA_R_P : rdip   t7, %ctrl153,  : IntAlu :  D=0x000000000040008d  flags=(IsInteger|IsMicroop|IsDelayedCommit|IsFirstMicroop)
+   2500: system.cpu A0 T0 : @asm_main_after_prologue+14.1  :   LEA_R_P : lea   rsi, DS:[t7 + 0x19] : IntAlu :  D=0x00000000004000a6  flags=(IsInteger|IsMicroop|IsLastMicroop)
+Exiting @ tick 3000 because all threads reached the max instruction count
+....
+
+The exact same can be achieved with the older hardcoded `--maxinsts` mechanism present in `se.py` and `fs.py`:
+
+....
+./run \
+  --emulator gem5 \
+  --static \
+  --userland \userland/arch/x86_64/freestanding/linux/hello.S \
+  --trace-insts-stdout \
+  -- \
+  --maxinsts 3
+;
+....
+
+The message also shows on <<user-mode-simulation>> deadlocks, for example in link:userland/posix/pthread_deadlock.c[]:
+
+....
+./run \
+  --emulator gem5 \
+  --static \
+  --userland userland/posix/pthread_deadlock.c \
+  --userland-args 1 \
+;
+....
+
+ends in:
+
+....
+Exiting @ tick 18446744073709551615 because simulate() limit reached
+....
+
+where 18446744073709551615 is 0xFFFFFFFFFFFFFFFF in decimal.
+
+And there is a <<baremetal>> example at link:baremetal/arch/aarch64/no_bootloader/wfe_loop.S[] that dies on <<arm-wfe-and-sev-instructions,WFE>>:
+
+....
+./run \
+  --arch aarch64 \
+  --baremetal baremetal/arch/aarch64/no_bootloader/wfe_loop.S \
+  --emulator gem5 \
+  --trace-insts-stdout \
+;
+....
+
+which gives:
+
+....
+info: Entering event queue @ 0.  Starting simulation...
+      0: system.cpu A0 T0 : @lkmc_start    :   wfe                      : IntAlu :  D=0x0000000000000000  flags=(IsSerializeAfter|IsNonSpeculative|IsQuiesce|IsUnverifiable)
+   1000: system.cpu A0 T0 : @lkmc_start+4    :   b   <lkmc_start>         : IntAlu :   flags=(IsControl|IsDirectControl|IsUncondControl)
+   1500: system.cpu A0 T0 : @lkmc_start    :   wfe                      : IntAlu :  D=0x0000000000000000  flags=(IsSerializeAfter|IsNonSpeculative|IsQuiesce|IsUnverifiable)
+Exiting @ tick 18446744073709551615 because simulate() limit reached
+....
+
+Other examples of the message:
+
+* <<arm-multicore>> with a single CPU stays stopped at an WFE sleep instruction
+* this sample bug on se.py multithreading: https://github.com/cirosantilli/linux-kernel-module-cheat/issues/81
+
+=== gem5 build options
+
+In order to use different build options, you might also want to use <<gem5-build-variants>> to keep the build outputs separate from one another.
+
+==== gem5 debug build
+
+The `gem5.debug` executable has optimizations turned off unlike the default `gem5.opt`, and provides a much better <<debug-the-emulator,debug experience>>:
+
+....
+./build-gem5 --arch aarch64 --gem5-build-type debug
+./run --arch aarch64 --debug-vm --emulator gem5 --gem5-build-type debug
+....
+
+The build outputs are automatically stored in a different directory from other build types such as `.opt` build, which prevents `.debug` files from overwriting `.opt` ones.
+
+Therefore, `--gem5-build-id` is not required.
+
+The price to pay for debuggability is high however: a Linux kernel boot was about 14 times slower than opt at 71e927e63bda6507d5a528f22c78d65099bdf36f between the commands:
+
+....
+./run --arch aarch64 --eval 'm5 exit' --emulator gem5 --linux-build-id v4.16
+./run --arch aarch64 --eval 'm5 exit' --emulator gem5 --linux-build-id v4.16 --gem5-build-type debug
+....
+
+so you will likely only use this when it is unavoidable. This is also benchmarked at: xref:benchmark-linux-kernel-boot[xrefstyle=full]
+
+==== gem5 clang build
+
+TODO test properly, benchmark vs GCC.
+
+....
+sudo apt-get install clang
+./build-gem5 --clang
+./run --clang --emulator gem5
+....
+
+==== gem5 sanitation build
+
+If there gem5 appears to have a C++ undefined behaviour bug, which is often very difficult to track down, you can try to build it with the following extra SCons options:
+
+....
+./build-gem5 --gem5-build-id san --verbose -- --with-ubsan --without-tcmalloc
+....
+
+This will make GCC do a lot of extra sanitation checks at compile and run time.
+
+As a result, the build and runtime will be way slower than normal, but that still might be the fastest way to solve undefined behaviour problems.
+
+Ideally, we should also be able to run it with asan with `--with-asan`, but if we try then the build fails at gem5 16eeee5356585441a49d05c78abc328ef09f7ace (with two ubsan trivial fixes I'll push soon):
+
+....
+=================================================================
+==9621==ERROR: LeakSanitizer: detected memory leaks
+
+Direct leak of 371712 byte(s) in 107 object(s) allocated from:
+    #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)
+    #1 0x7ff03950d065 in dictresize ../Objects/dictobject.c:643
+
+Direct leak of 23728 byte(s) in 26 object(s) allocated from:
+    #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)
+    #1 0x7ff03945e40d in _PyObject_GC_Malloc ../Modules/gcmodule.c:1499
+    #2 0x7ff03945e40d in _PyObject_GC_Malloc ../Modules/gcmodule.c:1493
+
+Direct leak of 2928 byte(s) in 43 object(s) allocated from:
+    #0 0x7ff03980487e in __interceptor_realloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c87e)
+    #1 0x7ff03951d763 in list_resize ../Objects/listobject.c:62
+    #2 0x7ff03951d763 in app1 ../Objects/listobject.c:277
+    #3 0x7ff03951d763 in PyList_Append ../Objects/listobject.c:289
+
+Direct leak of 2002 byte(s) in 3 object(s) allocated from:
+    #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)
+    #1 0x7ff0394fd813 in PyString_FromStringAndSize ../Objects/stringobject.c:88
+    #2 0x7ff0394fd813 in PyString_FromStringAndSize ../Objects/stringobject.c:57                                                                                                                                                                                                                                                                                                                                                                                                                                                                                Direct leak of 40 byte(s) in 2 object(s) allocated from:                                                                                                                                                                                                                            #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)
+    #1 0x7ff03951ea4b in PyList_New ../Objects/listobject.c:152
+
+Indirect leak of 10384 byte(s) in 11 object(s) allocated from:                                                                                                                                                                                                                      #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)                                                                                                                                                                                                   #1 0x7ff03945e40d in _PyObject_GC_Malloc ../Modules/gcmodule.c:1499                                                                                                                                                                                                             #2 0x7ff03945e40d in _PyObject_GC_Malloc ../Modules/gcmodule.c:1493
+
+Indirect leak of 4089 byte(s) in 6 object(s) allocated from:
+    #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)
+    #1 0x7ff0394fd648 in PyString_FromString ../Objects/stringobject.c:143
+
+Indirect leak of 2090 byte(s) in 3 object(s) allocated from:
+    #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)                                                                                                                                                                                                   #1 0x7ff0394eb36f in type_new ../Objects/typeobject.c:2421                                                                                                                                                                                                                      #2 0x7ff0394eb36f in type_new ../Objects/typeobject.c:2094
+Indirect leak of 1346 byte(s) in 2 object(s) allocated from:
+    #0 0x7ff039804448 in malloc (/usr/lib/x86_64-linux-gnu/libasan.so.5+0x10c448)
+    #1 0x7ff0394fd813 in PyString_FromStringAndSize ../Objects/stringobject.c:88                                                                                                                                                                                                    #2 0x7ff0394fd813 in PyString_FromStringAndSize ../Objects/stringobject.c:57                                                                                                                                                                                                                                                                                                                                                                                                                                                                                SUMMARY: AddressSanitizer: 418319 byte(s) leaked in 203 allocation(s).
+....
+
+From the message, this appears however to be a Python / pyenv11 bug however and not in gem5 specifically. I think it worked when I tried it in the past in an older gem5 / Ubuntu.
+

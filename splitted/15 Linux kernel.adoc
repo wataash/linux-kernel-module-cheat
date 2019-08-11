@@ -1,0 +1,4003 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Linux kernel
+
+=== Linux kernel configuration
+
+==== Modify kernel config
+
+To modify a single option on top of our <<kernel-configs-about,default kernel configs>>, do:
+
+....
+./build-linux --config 'CONFIG_FORTIFY_SOURCE=y'
+....
+
+Kernel modules depend on certain kernel configs, and therefore in general you might have to clean and rebuild the kernel modules after changing the kernel config:
+
+....
+./build-modules --clean
+./build-modules
+....
+
+and then proceed as in <<your-first-kernel-module-hack>>.
+
+You might often get way without rebuilding the kernel modules however.
+
+To use an extra kernel config fragment file on top of our defaults, do:
+
+....
+printf '
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+' > data/myconfig
+./build-linux --config-fragment 'data/myconfig'
+....
+
+To use just your own exact `.config` instead of our defaults ones, use:
+
+....
+./build-linux --custom-config-file data/myconfig
+....
+
+There is also a shortcut `--custom-config-file` to use the <<gem5-arm-linux-kernel-patches>>.
+
+The following options can all be used together, sorted by decreasing config setting power precedence:
+
+* `--config`
+* `--config-fragment`
+* `--custom-config-file`
+
+To do a clean menu config yourself and use that for the build, do:
+
+....
+./build-linux --clean
+./build-linux --custom-config-target menuconfig
+....
+
+But remember that every new build re-configures the kernel by default, so to keep your configs you will need to use on further builds:
+
+....
+./build-linux --no-configure
+....
+
+So what you likely want to do instead is to save that as a new `defconfig` and use it later as:
+
+....
+./build-linux --no-configure --no-modules-install savedefconfig
+cp "$(./getvar linux_build_dir)/defconfig" data/myconfig
+./build-linux --custom-config-file data/myconfig
+....
+
+You can also use other config generating targets such as `defconfig` with the same method as shown at: xref:linux-kernel-defconfig[xrefstyle=full].
+
+==== Find the kernel config
+
+Get the build config in guest:
+
+....
+zcat /proc/config.gz
+....
+
+or with our shortcut:
+
+....
+./conf.sh
+....
+
+or to conveniently grep for a specific option case insensitively:
+
+....
+./conf.sh ikconfig
+....
+
+Source: link:rootfs_overlay/lkmc/conf.sh[].
+
+This is enabled by:
+
+....
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y
+....
+
+From host:
+
+....
+cat "$(./getvar linux_config)"
+....
+
+Just for fun https://stackoverflow.com/questions/14958192/how-to-get-the-config-from-a-linux-kernel-image/14958263#14958263[]:
+
+....
+./linux/scripts/extract-ikconfig "$(./getvar vmlinux)"
+....
+
+although this can be useful when someone gives you a random image.
+
+[[kernel-configs-about]]
+==== About our Linux kernel configs
+
+By default, link:build-linux[] generates a `.config` that is a mixture of:
+
+* a base config extracted from Buildroot's minimal per machine `.config`, which has the minimal options needed to boot as explained at: xref:buildroot-kernel-config[xrefstyle=full].
+* small overlays put top of that
+
+To find out which kernel configs are being used exactly, simply run:
+
+....
+./build-linux --dry-run
+....
+
+and look for the `merge_config.sh` call. This script from the Linux kernel tree, as the name suggests, merges multiple configuration files into one as explained at: https://unix.stackexchange.com/questions/224887/how-to-script-make-menuconfig-to-automate-linux-kernel-build-configuration/450407#450407
+
+For each arch, the base of our configs are named as:
+
+....
+linux_config/buildroot-<arch>
+....
+
+e.g.: link:linux_config/buildroot-x86_64[].
+
+These configs are extracted directly from a Buildroot build with link:update-buildroot-kernel-configs[].
+
+Note that Buildroot can `sed` override some of the configurations, e.g. it forces `CONFIG_BLK_DEV_INITRD=y` when `BR2_TARGET_ROOTFS_CPIO` is on. For this reason, those configs are not simply copy pasted from Buildroot files, but rather from a Buildroot kernel build, and then minimized with `make savedefconfig`: https://stackoverflow.com/questions/27899104/how-to-create-a-defconfig-file-from-a-config
+
+On top of those, we add the following by default:
+
+* link:linux_config/min[]: see: xref:linux-kernel-min-config[xrefstyle=full]
+* link:linux_config/default[]: other optional configs that we enable by default because they increase visibility, or expose some cool feature, and don't significantly increase build time nor add significant runtime overhead
++
+We have since observed that the kernel size itself is very bloated compared to `defconfig` as shown at: xref:linux-kernel-defconfig[xrefstyle=full].
+
+[[buildroot-kernel-config]]
+===== About Buildroot's kernel configs
+
+To see Buildroot's base configs, start from https://github.com/buildroot/buildroot/blob/2018.05/configs/qemu_x86_64_defconfig[`buildroot/configs/qemu_x86_64_defconfig`].
+
+That file contains `BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="board/qemu/x86_64/linux-4.15.config"`, which points to the base config file used: https://github.com/buildroot/buildroot/blob/2018.05/board/qemu/x86_64/linux-4.15.config[board/qemu/x86_64/linux-4.15.config].
+
+`arm`, on the other hand, uses https://github.com/buildroot/buildroot/blob/2018.05/configs/qemu_arm_vexpress_defconfig[`buildroot/configs/qemu_arm_vexpress_defconfig`], which contains `BR2_LINUX_KERNEL_DEFCONFIG="vexpress"`, and therefore just does a `make vexpress_defconfig`, and gets its config from the Linux kernel tree itself.
+
+====== Linux kernel defconfig
+
+To boot https://stackoverflow.com/questions/41885015/what-exactly-does-linux-kernels-make-defconfig-do[defconfig] from disk on Linux and see a shell, all we need is these missing virtio options:
+
+....
+./build-linux \
+  --linux-build-id defconfig \
+  --custom-config-target defconfig \
+  --config CONFIG_VIRTIO_PCI=y \
+  --config CONFIG_VIRTIO_BLK=y \
+;
+./run --linux-build-id defconfig
+....
+
+Oh, and check this out:
+
+....
+du -h \
+  "$(./getvar vmlinux)" \
+  "$(./getvar --linux-build-id defconfig vmlinux)" \
+;
+....
+
+Output:
+
+....
+360M    /path/to/linux-kernel-module-cheat/out/linux/default/x86_64/vmlinux
+47M     /path/to/linux-kernel-module-cheat/out/linux/defconfig/x86_64/vmlinux
+....
+
+Brutal. Where did we go wrong?
+
+The extra virtio options are not needed if we use <<initrd>>:
+
+....
+./build-linux \
+  --linux-build-id defconfig \
+  --custom-config-target defconfig \
+;
+./run --initrd --linux-build-id defconfig
+....
+
+On aarch64, we can boot from initrd with:
+
+....
+./build-linux \
+  --arch aarch64 \
+  --linux-build-id defconfig \
+  --custom-config-target defconfig \
+;
+./run \
+  --arch aarch64 \
+  --initrd \
+  --linux-build-id defconfig \
+  --memory 2G \
+;
+....
+
+We need the 2G of memory because the CPIO is 600MiB due to a humongous amount of loadable kernel modules!
+
+In aarch64, the size situation is inverted from x86_64, and this can be seen on the vmlinux size as well:
+
+....
+118M    /path/to/linux-kernel-module-cheat/out/linux/default/aarch64/vmlinux
+240M    /path/to/linux-kernel-module-cheat/out/linux/defconfig/aarch64/vmlinux
+....
+
+So it seems that the ARM devs decided rather than creating a minimal config that boots QEMU, to try and make a single config that boots every board in existence. Terrible!
+
+Bibliography: https://unix.stackexchange.com/questions/29439/compiling-the-kernel-with-default-configurations/204512#204512
+
+Tested on 1e2b7f1e5e9e3073863dc17e25b2455c8ebdeadd + 1.
+
+====== Linux kernel min config
+
+link:linux_config/min[] contains minimal tweaks required to boot gem5 or for using our slightly different QEMU command line options than Buildroot on all archs.
+
+It is one of the default config fragments we use, as explained at: xref:kernel-configs-about[xrefstyle=full]>.
+
+Having the same config working for both QEMU and gem5 (oh, the hours of bisection) means that you can deal with functional matters in QEMU, which runs much faster, and switch to gem5 only for performance issues.
+
+We can build just with `min` on top of the base config with:
+
+....
+./build-linux \
+  --arch aarch64 \
+  --config-fragment linux_config/min \
+  --custom-config-file linux_config/buildroot-aarch64 \
+  --linux-build-id min \
+;
+....
+
+vmlinux had a very similar size to the default. It seems that link:linux_config/buildroot-aarch64[] contains or implies most link:linux_config/default[] options already? TODO: that seems odd, really?
+
+Tested on 649d06d6758cefd080d04dc47fd6a5a26a620874 + 1.
+
+===== Notable alternate gem5 kernel configs
+
+Other configs which we had previously tested at 4e0d9af81fcce2ce4e777cb82a1990d7c2ca7c1e are:
+
+* `arm` and `aarch64` configs present in the official ARM gem5 Linux kernel fork as described at: xref:gem5-arm-linux-kernel-patches[xrefstyle=full]. Some of the configs present there are added by the patches.
+* Jason's magic `x86_64` config: http://web.archive.org/web/20171229121642/http://www.lowepower.com/jason/files/config which is referenced at: http://web.archive.org/web/20171229121525/http://www.lowepower.com/jason/setting-up-gem5-full-system.html[]. QEMU boots with that by removing `# CONFIG_VIRTIO_PCI is not set`.
+
+=== Kernel version
+
+==== Find the kernel version
+
+We try to use the latest possible kernel major release version.
+
+In QEMU:
+
+....
+cat /proc/version
+....
+
+or in the source:
+
+....
+cd "$(./getvar linux_source_dir)"
+git log | grep -E '    Linux [0-9]+\.' | head
+....
+
+==== Update the Linux kernel
+
+During update all you kernel modules may break since the kernel API is not stable.
+
+They are usually trivial breaks of things moving around headers or to sub-structs.
+
+The userland, however, should simply not break, as Linus enforces strict backwards compatibility of userland interfaces.
+
+This backwards compatibility is just awesome, it makes getting and running the latest master painless.
+
+This also makes this repo the perfect setup to develop the Linux kernel.
+
+In case something breaks while updating the Linux kernel, you can try to bisect it to understand the root cause, see: xref:bisection[xrefstyle=full].
+
+===== Update the Linux kernel LKMC procedure
+
+First, use use the branching procedure described at: xref:update-a-forked-submodule[xrefstyle=full]
+
+Because the kernel is so central to this repository, almost all tests must be re-run, so basically just follow the full testing procedure described at: xref:test-this-repo[xrefstyle=full]. The only tests that can be skipped are essentially the <<baremetal>> tests.
+
+Before comitting, don't forget to update:
+
+* the `linux_kernel_version` constant in link:common.py[]
+* the tagline of this repository on:
+** this README
+** the GitHub project description
+
+==== Downgrade the Linux kernel
+
+The kernel is not forward compatible, however, so downgrading the Linux kernel requires downgrading the userland too to the latest Buildroot branch that supports it.
+
+The default Linux kernel version is bumped in Buildroot with commit messages of type:
+
+....
+linux: bump default to version 4.9.6
+....
+
+So you can try:
+
+....
+git log --grep 'linux: bump default to version'
+....
+
+Those commits change `BR2_LINUX_KERNEL_LATEST_VERSION` in `/linux/Config.in`.
+
+You should then look up if there is a branch that supports that kernel. Staying on branches is a good idea as they will get backports, in particular ones that fix the build as newer host versions come out.
+
+Finally, after downgrading Buildroot, if something does not work, you might also have to make some changes to how this repo uses Buildroot, as the Buildroot configuration options might have changed.
+
+We don't expect those changes to be very difficult. A good way to approach the task is to:
+
+* do a dry run build to get the equivalent Bash commands used:
++
+....
+./build-buildroot --dry-run
+....
+* build the Buildroot documentation for the version you are going to use, and check if all Buildroot build commands make sense there
+
+Then, if you spot an option that is wrong, some grepping in this repo should quickly point you to the code you need to modify.
+
+It also possible that you will need to apply some patches from newer Buildroot versions for it to build, due to incompatibilities with the host Ubuntu packages and that Buildroot version. Just read the error message, and try:
+
+* `git log master -- packages/<pkg>`
+* Google the error message for mailing list hits
+
+Successful port reports:
+
+* v3.18: https://github.com/cirosantilli/linux-kernel-module-cheat/issues/39#issuecomment-438525481
+
+=== Kernel command line parameters
+
+Bootloaders can pass a string as input to the Linux kernel when it is booting to control its behaviour, much like the `execve` system call does to userland processes.
+
+This allows us to control the behaviour of the kernel without rebuilding anything.
+
+With QEMU, QEMU itself acts as the bootloader, and provides the `-append` option and we expose it through `./run --kernel-cli`, e.g.:
+
+....
+./run --kernel-cli 'foo bar'
+....
+
+Then inside the host, you can check which options were given with:
+
+....
+cat /proc/cmdline
+....
+
+They are also printed at the beginning of the boot message:
+
+....
+dmesg | grep "Command line"
+....
+
+See also:
+
+* https://unix.stackexchange.com/questions/48601/how-to-display-the-linux-kernel-command-line-parameters-given-for-the-current-bo
+* https://askubuntu.com/questions/32654/how-do-i-find-the-boot-parameters-used-by-the-running-kernel
+
+The arguments are documented in the kernel documentation: https://www.kernel.org/doc/html/v4.14/admin-guide/kernel-parameters.html
+
+When dealing with real boards, extra command line options are provided on some magic bootloader configuration file, e.g.:
+
+* GRUB configuration files: https://askubuntu.com/questions/19486/how-do-i-add-a-kernel-boot-parameter
+* Raspberry pi `/boot/cmdline.txt` on a magic partition: https://raspberrypi.stackexchange.com/questions/14839/how-to-change-the-kernel-commandline-for-archlinuxarm-on-raspberry-pi-effectly
+
+==== Kernel command line parameters escaping
+
+Double quotes can be used to escape spaces as in `opt="a b"`, but double quotes themselves cannot be escaped, e.g. `opt"a\"b"`
+
+This even lead us to use base64 encoding with `--eval`!
+
+==== Kernel command line parameters definition points
+
+There are two methods:
+
+* `__setup` as in:
++
+....
+__setup("console=", console_setup);
+....
+* `core_param` as in:
++
+....
+core_param(panic, panic_timeout, int, 0644);
+....
+
+`core_param` suggests how they are different:
+
+....
+/**
+ * core_param - define a historical core kernel parameter.
+
+...
+
+ * core_param is just like module_param(), but cannot be modular and
+ * doesn't add a prefix (such as "printk.").  This is for compatibility
+ * with __setup(), and it makes sense as truly core parameters aren't
+ * tied to the particular file they're in.
+ */
+....
+
+==== rw
+
+By default, the Linux kernel mounts the root filesystem as readonly. TODO rationale?
+
+This cannot be observed in the default BusyBox init, because by default our link:rootfs_overlay/etc/inittab[] does:
+
+....
+/bin/mount -o remount,rw /
+....
+
+Analogously, Ubuntu 18.04 does in its fstab something like:
+
+....
+UUID=/dev/sda1 / ext4 errors=remount-ro 0 1
+....
+
+which uses default mount `rw` flags.
+
+We have however removed those setups init setups to keep things more minimal, and replaced them with the `rw` kernel boot parameter makes the root mounted as writable.
+
+To observe the default readonly behaviour, hack the link:run[] script to remove <<replace-init,replace init>>, and then run on a raw shell:
+
+....
+./run --kernel-cli 'init=/bin/sh'
+....
+
+Now try to do:
+
+....
+touch a
+....
+
+which fails with:
+
+....
+touch: a: Read-only file system
+....
+
+We can also observe the read-onlyness with:
+
+....
+mount -t proc /proc
+mount
+....
+
+which contains:
+
+....
+/dev/root on / type ext2 (ro,relatime,block_validity,barrier,user_xattr)
+....
+
+and so it is Read Only as shown by `ro`.
+
+==== norandmaps
+
+Disable userland address space randomization. Test it out by running <<rand_check-out>> twice:
+
+....
+./run --eval-after './linux/rand_check.out;./linux/poweroff.out'
+./run --eval-after './linux/rand_check.out;./linux/poweroff.out'
+....
+
+If we remove it from our link:run[] script by hacking it up, the addresses shown by `linux/rand_check.out` vary across boots.
+
+Equivalent to:
+
+....
+echo 0 > /proc/sys/kernel/randomize_va_space
+....
+
+=== printk
+
+`printk` is the most simple and widely used way of getting information from the kernel, so you should familiarize yourself with its basic configuration.
+
+We use `printk` a lot in our kernel modules, and it shows on the terminal by default, along with stdout and what you type.
+
+Hide all `printk` messages:
+
+....
+dmesg -n 1
+....
+
+or equivalently:
+
+....
+echo 1 > /proc/sys/kernel/printk
+....
+
+See also: https://superuser.com/questions/351387/how-to-stop-kernel-messages-from-flooding-my-console
+
+Do it with a <<kernel-command-line-parameters>> to affect the boot itself:
+
+....
+./run --kernel-cli 'loglevel=5'
+....
+
+and now only boot warning messages or worse show, which is useful to identify problems.
+
+Our default `printk` format is:
+
+....
+<LEVEL>[TIMESTAMP] MESSAGE
+....
+
+e.g.:
+
+....
+<6>[    2.979121] Freeing unused kernel memory: 2024K
+....
+
+where:
+
+* `LEVEL`: higher means less serious
+* `TIMESTAMP`: seconds since boot
+
+This format is selected by the following boot options:
+
+* `console_msg_format=syslog`: add the `<LEVEL>` part. Added in v4.16.
+* `printk.time=y`: add the `[TIMESTAMP]` part
+
+The debug highest level is a bit more magic, see: xref:pr_debug[xrefstyle=full] for more info.
+
+==== /proc/sys/kernel/printk
+
+The current printk level can be obtained with:
+
+....
+cat /proc/sys/kernel/printk
+....
+
+As of `87e846fc1f9c57840e143513ebd69c638bd37aa8` this prints:
+
+....
+7       4       1       7
+....
+
+which contains:
+
+* `7`: current log level, modifiable by previously mentioned methods
+* `4`: documented as: "printk's without a loglevel use this": TODO what does that mean, how to call `printk` without a log level?
+* `1`: minimum log level that still prints something (`0` prints nothing)
+* `7`: default log level
+
+We start at the boot time default after boot by default, as can be seen from:
+
+....
+insmod myprintk.ko
+....
+
+which outputs something like:
+
+....
+<1>[   12.494429] pr_alert
+<2>[   12.494666] pr_crit
+<3>[   12.494823] pr_err
+<4>[   12.494911] pr_warning
+<5>[   12.495170] pr_notice
+<6>[   12.495327] pr_info
+....
+
+Source: link:kernel_modules/myprintk.c[]
+
+This proc entry is defined at: https://github.com/torvalds/linux/blob/v5.1/kernel/sysctl.c#L839
+
+....
+#if defined CONFIG_PRINTK
+	{
+		.procname	= "printk",
+		.data		= &console_loglevel,
+		.maxlen		= 4*sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+....
+
+which teaches us that printk can be completely disabled at compile time:
+
+....
+
+config PRINTK
+	default y
+	bool "Enable support for printk" if EXPERT
+	select IRQ_WORK
+	help
+	  This option enables normal printk support. Removing it
+	  eliminates most of the message strings from the kernel image
+	  and makes the kernel more or less silent. As this makes it
+	  very difficult to diagnose system problems, saying N here is
+	  strongly discouraged.
+....
+
+`console_loglevel` is defined at:
+
+....
+#define console_loglevel (console_printk[0])
+....
+
+and `console_printk` is an array with 4 ints:
+
+....
+int console_printk[4] = {
+	CONSOLE_LOGLEVEL_DEFAULT,	/* console_loglevel */
+	MESSAGE_LOGLEVEL_DEFAULT,	/* default_message_loglevel */
+	CONSOLE_LOGLEVEL_MIN,		/* minimum_console_loglevel */
+	CONSOLE_LOGLEVEL_DEFAULT,	/* default_console_loglevel */
+};
+....
+
+and then we see that the default is configurable with `CONFIG_CONSOLE_LOGLEVEL_DEFAULT`:
+
+....
+/*
+ * Default used to be hard-coded at 7, quiet used to be hardcoded at 4,
+ * we're now allowing both to be set from kernel config.
+ */
+#define CONSOLE_LOGLEVEL_DEFAULT CONFIG_CONSOLE_LOGLEVEL_DEFAULT
+#define CONSOLE_LOGLEVEL_QUIET	 CONFIG_CONSOLE_LOGLEVEL_QUIET
+....
+
+The message loglevel default is explained at:
+
+....
+/* printk's without a loglevel use this.. */
+#define MESSAGE_LOGLEVEL_DEFAULT CONFIG_MESSAGE_LOGLEVEL_DEFAULT
+....
+
+The min is just hardcoded to one as you would expect, with some amazing kernel comedy around it:
+
+....
+/* We show everything that is MORE important than this.. */
+#define CONSOLE_LOGLEVEL_SILENT  0 /* Mum's the word */
+#define CONSOLE_LOGLEVEL_MIN	 1 /* Minimum loglevel we let people use */
+#define CONSOLE_LOGLEVEL_DEBUG	10 /* issue debug messages */
+#define CONSOLE_LOGLEVEL_MOTORMOUTH 15	/* You can't shut this one up */
+....
+
+We then also learn about the useless `quiet` and `debug` kernel parameters at:
+
+....
+config CONSOLE_LOGLEVEL_QUIET
+	int "quiet console loglevel (1-15)"
+	range 1 15
+	default "4"
+	help
+	  loglevel to use when "quiet" is passed on the kernel commandline.
+
+	  When "quiet" is passed on the kernel commandline this loglevel
+	  will be used as the loglevel. IOW passing "quiet" will be the
+	  equivalent of passing "loglevel=<CONSOLE_LOGLEVEL_QUIET>"
+....
+
+which explains the useless reason why that number is special. This is implemented at:
+
+....
+static int __init debug_kernel(char *str)
+{
+	console_loglevel = CONSOLE_LOGLEVEL_DEBUG;
+	return 0;
+}
+
+static int __init quiet_kernel(char *str)
+{
+	console_loglevel = CONSOLE_LOGLEVEL_QUIET;
+	return 0;
+}
+
+early_param("debug", debug_kernel);
+early_param("quiet", quiet_kernel);
+....
+
+==== ignore_loglevel
+
+....
+./run --kernel-cli 'ignore_loglevel'
+....
+
+enables all log levels, and is basically the same as:
+
+....
+./run --kernel-cli 'loglevel=8'
+....
+
+except that you don't need to know what is the maximum level.
+
+==== pr_debug
+
+https://stackoverflow.com/questions/28936199/why-is-pr-debug-of-the-linux-kernel-not-giving-any-output/49835405#49835405
+
+Debug messages are not printable by default without recompiling.
+
+But the awesome `CONFIG_DYNAMIC_DEBUG=y` option which we enable by default allows us to do:
+
+....
+echo 8 > /proc/sys/kernel/printk
+echo 'file kernel/module.c +p' > /sys/kernel/debug/dynamic_debug/control
+./linux/myinsmod.out hello.ko
+....
+
+and we have a shortcut at:
+
+....
+./pr_debug.sh
+....
+
+Source: link:rootfs_overlay/lkmc/pr_debug.sh[].
+
+Syntax: https://www.kernel.org/doc/html/v4.11/admin-guide/dynamic-debug-howto.html
+
+Wildcards are also accepted, e.g. enable all messages from all files:
+
+....
+echo 'file * +p' > /sys/kernel/debug/dynamic_debug/control
+....
+
+TODO: why is this not working:
+
+....
+echo 'func sys_init_module +p' > /sys/kernel/debug/dynamic_debug/control
+....
+
+Enable messages in specific modules:
+
+....
+echo 8 > /proc/sys/kernel/printk
+echo 'module myprintk +p' > /sys/kernel/debug/dynamic_debug/control
+insmod myprintk.ko
+....
+
+Source: link:kernel_modules/myprintk.c[]
+
+This outputs the `pr_debug` message:
+
+....
+printk debug
+....
+
+but TODO: it also shows debug messages even without enabling them explicitly:
+
+....
+echo 8 > /proc/sys/kernel/printk
+insmod myprintk.ko
+....
+
+and it shows as enabled:
+
+....
+# grep myprintk /sys/kernel/debug/dynamic_debug/control
+/root/linux-kernel-module-cheat/out/kernel_modules/x86_64/kernel_modules/panic.c:12 [myprintk]myinit =p "pr_debug\012"
+....
+
+Enable `pr_debug` for boot messages as well, before we can reach userland and write to `/proc`:
+
+....
+./run --kernel-cli 'dyndbg="file * +p" loglevel=8'
+....
+
+Get ready for the noisiest boot ever, I think it overflows the `printk` buffer and funny things happen.
+
+===== pr_debug != printk(KERN_DEBUG
+
+When `CONFIG_DYNAMIC_DEBUG` is set,  `printk(KERN_DEBUG` is not the exact same as `pr_debug(` since `printk(KERN_DEBUG` messages are visible with:
+
+....
+./run --kernel-cli 'initcall_debug logleve=8'
+....
+
+which outputs lines of type:
+
+....
+<7>[    1.756680] calling  clk_disable_unused+0x0/0x130 @ 1
+<7>[    1.757003] initcall clk_disable_unused+0x0/0x130 returned 0 after 111 usecs
+....
+
+which are `printk(KERN_DEBUG` inside `init/main.c` in v4.16.
+
+Mentioned at: https://stackoverflow.com/questions/37272109/how-to-get-details-of-all-modules-drivers-got-initialized-probed-during-kernel-b
+
+This likely comes from the ifdef split at `init/main.c`:
+
+....
+/* If you are writing a driver, please use dev_dbg instead */
+#if defined(CONFIG_DYNAMIC_DEBUG)
+#include <linux/dynamic_debug.h>
+
+/* dynamic_pr_debug() uses pr_fmt() internally so we don't need it here */
+#define pr_debug(fmt, ...) \
+    dynamic_pr_debug(fmt, ##__VA_ARGS__)
+#elif defined(DEBUG)
+#define pr_debug(fmt, ...) \
+    printk(KERN_DEBUG pr_fmt(fmt), ##__VA_ARGS__)
+#else
+#define pr_debug(fmt, ...) \
+    no_printk(KERN_DEBUG pr_fmt(fmt), ##__VA_ARGS__)
+#endif
+....
+
+=== Linux kernel entry point
+
+`start_kernel` is a good definition of it: https://stackoverflow.com/questions/18266063/does-kernel-have-main-function/33422401#33422401
+
+=== Kernel module APIs
+
+==== Kernel module parameters
+
+The Linux kernel allows passing module parameters at insertion time <<myinsmod,through the `init_module` and `finit_module` system calls>>.
+
+The `insmod` tool exposes that as:
+
+....
+insmod params.ko i=3 j=4
+....
+
+Parameters are declared in the module as:
+
+....
+static u32 i = 0;
+module_param(i, int, S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(i, "my favorite int");
+....
+
+Automated test:
+
+....
+./params.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/params.c[]
+* link:rootfs_overlay/lkmc/params.sh[]
+
+As shown in the example, module parameters can also be read and modified at runtime from <<sysfs>>.
+
+We can obtain the help text of the parameters with:
+
+....
+modinfo params.ko
+....
+
+The output contains:
+
+....
+parm:           j:my second favorite int
+parm:           i:my favorite int
+....
+
+===== modprobe.conf
+
+<<modprobe>> insertion can also set default parameters via the link:rootfs_overlay/etc/modprobe.conf[`/etc/modprobe.conf`] file:
+
+....
+modprobe params
+cat /sys/kernel/debug/lkmc_params
+....
+
+Output:
+
+....
+12 34
+....
+
+This is specially important when loading modules with <<kernel-module-dependencies>> or else we would have no opportunity of passing those.
+
+`modprobe.conf` doesn't actually insmod anything for us: https://superuser.com/questions/397842/automatically-load-kernel-module-at-boot-angstrom/1267464#1267464
+
+==== Kernel module dependencies
+
+One module can depend on symbols of another module that are exported with `EXPORT_SYMBOL`:
+
+....
+./dep.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/dep.c[]
+* link:kernel_modules/dep2.c[]
+* link:rootfs_overlay/lkmc/dep.sh[]
+
+The kernel deduces dependencies based on the `EXPORT_SYMBOL` that each module uses.
+
+Symbols exported by `EXPORT_SYMBOL` can be seen with:
+
+....
+insmod dep.ko
+grep lkmc_dep /proc/kallsyms
+....
+
+sample output:
+
+....
+ffffffffc0001030 r __ksymtab_lkmc_dep   [dep]
+ffffffffc000104d r __kstrtab_lkmc_dep   [dep]
+ffffffffc0002300 B lkmc_dep     [dep]
+....
+
+This requires `CONFIG_KALLSYMS_ALL=y`.
+
+Dependency information is stored by the kernel module build system in the `.ko` files' <<module_info>>, e.g.:
+
+....
+modinfo dep2.ko
+....
+
+contains:
+
+....
+depends:        dep
+....
+
+We can double check with:
+
+....
+strings 3 dep2.ko  | grep -E 'depends'
+....
+
+The output contains:
+
+....
+depends=dep
+....
+
+Module dependencies are also stored at:
+
+....
+cd /lib/module/*
+grep dep modules.dep
+....
+
+Output:
+
+....
+extra/dep2.ko: extra/dep.ko
+extra/dep.ko:
+....
+
+TODO: what for, and at which point point does Buildroot / BusyBox generate that file?
+
+===== Kernel module dependencies with modprobe
+
+Unlike `insmod`, <<modprobe>> deals with kernel module dependencies for us.
+
+First get <<kernel_modules-buildroot-package>> working.
+
+Then, for example:
+
+....
+modprobe buildroot_dep2
+....
+
+outputs to dmesg:
+
+....
+42
+....
+
+and then:
+
+....
+lsmod
+....
+
+outputs:
+
+....
+Module                  Size  Used by    Tainted: G
+buildroot_dep2         16384  0
+buildroot_dep          16384  1 buildroot_dep2
+....
+
+Sources:
+
+* link:buildroot_packages/kernel_modules/buildroot_dep.c[]
+* link:buildroot_packages/kernel_modules/buildroot_dep2.c[]
+
+Removal also removes required modules that have zero usage count:
+
+....
+modprobe -r buildroot_dep2
+....
+
+`modprobe` uses information from the `modules.dep` file to decide the required dependencies. That file contains:
+
+....
+extra/buildroot_dep2.ko: extra/buildroot_dep.ko
+....
+
+Bibliography:
+
+* https://askubuntu.com/questions/20070/whats-the-difference-between-insmod-and-modprobe
+* https://stackoverflow.com/questions/22891705/whats-the-difference-between-insmod-and-modprobe
+
+==== MODULE_INFO
+
+Module metadata is stored on module files at compile time. Some of the fields can be retrieved through the `THIS_MODULE` `struct module`:
+
+....
+insmod module_info.ko
+....
+
+Dmesg output:
+
+....
+name = module_info
+version = 1.0
+....
+
+Source: link:kernel_modules/module_info.c[]
+
+Some of those are also present on sysfs:
+
+....
+cat /sys/module/module_info/version
+....
+
+Output:
+
+....
+1.0
+....
+
+And we can also observe them with the `modinfo` command line utility:
+
+....
+modinfo module_info.ko
+....
+
+sample output:
+
+....
+filename:       module_info.ko
+license:        GPL
+version:        1.0
+srcversion:     AF3DE8A8CFCDEB6B00E35B6
+depends:
+vermagic:       4.17.0 SMP mod_unload modversions
+....
+
+Module information is stored in a special `.modinfo` section of the ELF file:
+
+....
+./run-toolchain readelf -- -SW "$(./getvar kernel_modules_build_subdir)/module_info.ko"
+....
+
+contains:
+
+....
+  [ 5] .modinfo          PROGBITS        0000000000000000 0000d8 000096 00   A  0   0  8
+....
+
+and:
+
+....
+./run-toolchain readelf -- -x .modinfo "$(./getvar kernel_modules_build_subdir)/module_info.ko"
+....
+
+gives:
+
+....
+  0x00000000 6c696365 6e73653d 47504c00 76657273 license=GPL.vers
+  0x00000010 696f6e3d 312e3000 61736466 3d717765 ion=1.0.asdf=qwe
+  0x00000020 72000000 00000000 73726376 65727369 r.......srcversi
+  0x00000030 6f6e3d41 46334445 38413843 46434445 on=AF3DE8A8CFCDE
+  0x00000040 42364230 30453335 42360000 00000000 B6B00E35B6......
+  0x00000050 64657065 6e64733d 006e616d 653d6d6f depends=.name=mo
+  0x00000060 64756c65 5f696e66 6f007665 726d6167 dule_info.vermag
+  0x00000070 69633d34 2e31372e 3020534d 50206d6f ic=4.17.0 SMP mo
+  0x00000080 645f756e 6c6f6164 206d6f64 76657273 d_unload modvers
+  0x00000090 696f6e73 2000                       ions .
+....
+
+I think a dedicated section is used to allow the Linux kernel and command line tools to easily parse that information from the ELF file as we've done with `readelf`.
+
+Bibliography:
+
+* https://stackoverflow.com/questions/19467150/significance-of-this-module-in-linux-driver/49812248#49812248
+* https://stackoverflow.com/questions/4839024/how-to-find-the-version-of-a-compiled-kernel-module/42556565#42556565
+* https://unix.stackexchange.com/questions/238167/how-to-understand-the-modinfo-output
+
+==== vermagic
+
+Vermagic is a magic string present in the kernel and on <<module_info>> of kernel modules. It is used to verify that the kernel module was compiled against a compatible kernel version and relevant configuration:
+
+....
+insmod vermagic.ko
+....
+
+Possible dmesg output:
+
+....
+VERMAGIC_STRING = 4.17.0 SMP mod_unload modversions
+....
+
+Source: link:kernel_modules/vermagic.c[]
+
+If we artificially create a mismatch with `MODULE_INFO(vermagic`, the insmod fails with:
+
+....
+insmod: can't insert 'vermagic_fail.ko': invalid module format
+....
+
+and `dmesg` says the expected and found vermagic found:
+
+....
+vermagic_fail: version magic 'asdfqwer' should be '4.17.0 SMP mod_unload modversions '
+....
+
+Source: link:kernel_modules/vermagic_fail.c[]
+
+The kernel's vermagic is defined based on compile time configurations at https://github.com/torvalds/linux/blob/v4.17/include/linux/vermagic.h#L35[include/linux/vermagic.h]:
+
+....
+#define VERMAGIC_STRING                                                 \
+        UTS_RELEASE " "                                                 \
+        MODULE_VERMAGIC_SMP MODULE_VERMAGIC_PREEMPT                     \
+        MODULE_VERMAGIC_MODULE_UNLOAD MODULE_VERMAGIC_MODVERSIONS       \
+        MODULE_ARCH_VERMAGIC                                            \
+        MODULE_RANDSTRUCT_PLUGIN
+....
+
+The `SMP` part of the string for example is defined on the same file based on the value of `CONFIG_SMP`:
+
+....
+#ifdef CONFIG_SMP
+#define MODULE_VERMAGIC_SMP "SMP "
+#else
+#define MODULE_VERMAGIC_SMP ""
+....
+
+TODO how to get the vermagic from running kernel from userland? https://lists.kernelnewbies.org/pipermail/kernelnewbies/2012-October/006306.html
+
+<<kmod-modprobe>> has a flag to skip the vermagic check:
+
+....
+--force-modversion
+....
+
+This option just strips `modversion` information from the module before loading, so it is not a kernel feature.
+
+==== init_module
+
+`init_module` and `cleanup_module` are an older alternative to the `module_init` and `module_exit` macros:
+
+....
+insmod init_module.ko
+rmmod init_module
+....
+
+Dmesg output:
+
+....
+init_module
+cleanup_module
+....
+
+Source: link:kernel_modules/init_module.c[]
+
+TODO why were `module_init` and `module_exit` created? https://stackoverflow.com/questions/3218320/what-is-the-difference-between-module-init-and-init-module-in-a-linux-kernel-mod
+
+==== Floating point in kernel modules
+
+It is generally hard / impossible to use floating point operations in the kernel. TODO understand details.
+
+A quick (x86-only for now because lazy) example is shown at: link:kernel_modules/float.c[]
+
+Usage:
+
+....
+insmod float.ko myfloat=1 enable_fpu=1
+....
+
+We have to call: `kernel_fpu_begin()` before starting FPU operations, and `kernel_fpu_end()` when we are done. This particular example however did not blow up without it at lkmc 7f917af66b17373505f6c21d75af9331d624b3a9 + 1:
+
+....
+insmod float.ko myfloat=1 enable_fpu=0
+....
+
+The v5.1 documentation under https://github.com/cirosantilli/linux/blob/v5.1/arch/x86/include/asm/fpu/api.h#L15[arch/x86/include/asm/fpu/api.h] reads:
+
+....
+ * Use kernel_fpu_begin/end() if you intend to use FPU in kernel context. It
+ * disables preemption so be careful if you intend to use it for long periods
+ * of time.
+....
+
+The example sets in the link:kernel_modules/Makefile[]:
+
+....
+CFLAGS_REMOVE_float.o += -mno-sse -mno-sse2
+....
+
+to avoid:
+
+....
+error: SSE register return with SSE disabled
+....
+
+We found those flags with `./build-modules --verbose`.
+
+Bibliography:
+
+* https://stackoverflow.com/questions/13886338/use-of-floating-point-in-the-linux-kernel
+* https://stackoverflow.com/questions/15883947/why-am-i-able-to-perform-floating-point-operations-inside-a-linux-kernel-module/47056242
+* https://stackoverflow.com/questions/1556142/sse-register-return-with-sse-disabled
+
+=== Kernel panic and oops
+
+To test out kernel panics and oops in controlled circumstances, try out the modules:
+
+....
+insmod panic.ko
+insmod oops.ko
+....
+
+Source:
+
+* link:kernel_modules/panic.c[]
+* link:kernel_modules/oops.c[]
+
+A panic can also be generated with:
+
+....
+echo c > /proc/sysrq-trigger
+....
+
+Panic vs oops: https://unix.stackexchange.com/questions/91854/whats-the-difference-between-a-kernel-oops-and-a-kernel-panic
+
+How to generate them:
+
+* https://unix.stackexchange.com/questions/66197/how-to-cause-kernel-panic-with-a-single-command
+* https://stackoverflow.com/questions/23484147/generate-kernel-oops-or-crash-in-the-code
+
+When a panic happens, <<linux-kernel-magic-keys,`Shift-PgUp`>> does not work as it normally does, and it is hard to get the logs if on are on <<qemu-graphic-mode>>:
+
+* https://superuser.com/questions/848412/scrolling-up-the-failed-screen-with-kernel-panic
+* https://superuser.com/questions/269228/write-qemu-booting-virtual-machine-output-to-a-file
+* http://www.reactos.org/wiki/QEMU#Redirect_to_a_file
+
+==== Kernel panic
+
+On panic, the kernel dies, and so does our terminal.
+
+The panic trace looks like:
+
+....
+panic: loading out-of-tree module taints kernel.
+panic myinit
+Kernel panic - not syncing: hello panic
+CPU: 0 PID: 53 Comm: insmod Tainted: G           O     4.16.0 #6
+Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS rel-1.11.0-0-g63451fca13-prebuilt.qemu-project.org 04/01/2014
+Call Trace:
+ dump_stack+0x7d/0xba
+ ? 0xffffffffc0000000
+ panic+0xda/0x213
+ ? printk+0x43/0x4b
+ ? 0xffffffffc0000000
+ myinit+0x1d/0x20 [panic]
+ do_one_initcall+0x3e/0x170
+ do_init_module+0x5b/0x210
+ load_module+0x2035/0x29d0
+ ? kernel_read_file+0x7d/0x140
+ ? SyS_finit_module+0xa8/0xb0
+ SyS_finit_module+0xa8/0xb0
+ do_syscall_64+0x6f/0x310
+ ? trace_hardirqs_off_thunk+0x1a/0x32
+ entry_SYSCALL_64_after_hwframe+0x42/0xb7
+RIP: 0033:0x7ffff7b36206
+RSP: 002b:00007fffffffeb78 EFLAGS: 00000206 ORIG_RAX: 0000000000000139
+RAX: ffffffffffffffda RBX: 000000000000005c RCX: 00007ffff7b36206
+RDX: 0000000000000000 RSI: 000000000069e010 RDI: 0000000000000003
+RBP: 000000000069e010 R08: 00007ffff7ddd320 R09: 0000000000000000
+R10: 00007ffff7ddd320 R11: 0000000000000206 R12: 0000000000000003
+R13: 00007fffffffef4a R14: 0000000000000000 R15: 0000000000000000
+Kernel Offset: disabled
+---[ end Kernel panic - not syncing: hello panic
+....
+
+Notice how our panic message `hello panic` is visible at:
+
+....
+Kernel panic - not syncing: hello panic
+....
+
+===== Kernel module stack trace to source line
+
+The log shows which module each symbol belongs to if any, e.g.:
+
+....
+myinit+0x1d/0x20 [panic]
+....
+
+says that the function `myinit` is in the module `panic`.
+
+To find the line that panicked, do:
+
+....
+./run-gdb
+....
+
+and then:
+
+....
+info line *(myinit+0x1d)
+....
+
+which gives us the correct line:
+
+....
+Line 7 of "/root/linux-kernel-module-cheat/out/kernel_modules/x86_64/kernel_modules/panic.c" starts at address 0xbf00001c <myinit+28> and ends at 0xbf00002c <myexit>.
+....
+
+as explained at: https://stackoverflow.com/questions/8545931/using-gdb-to-convert-addresses-to-lines/27576029#27576029
+
+The exact same thing can be done post mortem with:
+
+....
+./run-toolchain gdb -- \
+  -batch \
+  -ex 'info line *(myinit+0x1d)' \
+  "$(./getvar kernel_modules_build_subdir)/panic.ko" \
+;
+....
+
+Related:
+
+* https://stackoverflow.com/questions/6151538/addr2line-on-kernel-module
+* https://stackoverflow.com/questions/13468286/how-to-read-understand-analyze-and-debug-a-linux-kernel-panic
+
+===== BUG_ON
+
+Basically just calls `panic("BUG!")` for most archs.
+
+===== Exit emulator on panic
+
+For testing purposes, it is very useful to quit the emulator automatically with exit status non zero in case of kernel panic, instead of just hanging forever.
+
+====== Exit QEMU on panic
+
+Enabled by default with:
+
+* `panic=-1` command line option which reboots the kernel immediately on panic, see: xref:reboot-on-panic[xrefstyle=full]
+* QEMU `-no-reboot`, which makes QEMU exit when the guest tries to reboot
+
+Also asked at https://unix.stackexchange.com/questions/443017/can-i-make-qemu-exit-with-failure-on-kernel-panic which also mentions the x86_64 `-device pvpanic`, but I don't see much advantage to it.
+
+TODO neither method exits with exit status different from 0, so for now we are just grepping the logs for panic messages, which sucks.
+
+One possibility that gets close would be to use <<gdb>> to break at the `panic` function, and then send a <<qemu-monitor-from-gdb>> `quit` command if that happens, but I don't see a way to exit with non-zero status to indicate error.
+
+====== Exit gem5 on panic
+
+gem5 9048ef0ffbf21bedb803b785fb68f83e95c04db8 (January 2019) can detect panics automatically if the option `system.panic_on_panic` is on.
+
+It parses kernel symbols and detecting when the PC reaches the address of the `panic` function. gem5 then prints to stdout:
+
+....
+Kernel panic in simulated kernel
+....
+
+and exits with status -6.
+
+At gem5 ff52563a214c71fcd1e21e9f00ad839612032e3b (July 2018) behaviour was different, and just exited 0: https://www.mail-archive.com/gem5-users@gem5.org/msg15870.html TODO find fixing commit.
+
+We enable the `system.panic_on_panic` option by default on `arm` and `aarch64`, which makes gem5 exit immediately in case of panic, which is awesome!
+
+If we don't set `system.panic_on_panic`, then gem5 just hangs on an infinite guest loop.
+
+TODO: why doesn't gem5 x86 ff52563a214c71fcd1e21e9f00ad839612032e3b support `system.panic_on_panic` as well? Trying to set `system.panic_on_panic` there fails with:
+
+....
+tried to set or access non-existentobject parameter: panic_on_panic
+....
+
+However, at that commit panic on x86 makes gem5 crash with:
+
+....
+panic: i8042 "System reset" command not implemented.
+....
+
+which is a good side effect of an unimplemented hardware feature, since the simulation actually stops.
+
+The implementation of panic detection happens at: https://github.com/gem5/gem5/blob/1da285dfcc31b904afc27e440544d006aae25b38/src/arch/arm/linux/system.cc#L73
+
+....
+        kernelPanicEvent = addKernelFuncEventOrPanic<Linux::KernelPanicEvent>(
+            "panic", "Kernel panic in simulated kernel", dmesg_output);
+....
+
+Here we see that the symbol `"panic"` for the `panic()` function is the one being tracked.
+
+Related thread: https://stackoverflow.com/questions/56032347/is-there-a-way-to-identify-if-gem5-run-got-over-successfully
+
+===== Reboot on panic
+
+Make the kernel reboot after n seconds after panic:
+
+....
+echo 1 > /proc/sys/kernel/panic
+....
+
+Can also be controlled with the `panic=` kernel boot parameter.
+
+`0` to disable, `-1` to reboot immediately.
+
+Bibliography:
+
+* https://github.com/torvalds/linux/blob/v4.17/Documentation/admin-guide/kernel-parameters.txt#L2931
+* https://unix.stackexchange.com/questions/29567/how-to-configure-the-linux-kernel-to-reboot-on-panic/29569#29569
+
+===== Panic trace show addresses instead of symbols
+
+If `CONFIG_KALLSYMS=n`, then addresses are shown on traces instead of symbol plus offset.
+
+In v4.16 it does not seem possible to configure that at runtime. GDB step debugging with:
+
+....
+./run --eval-after 'insmod dump_stack.ko' --gdb-wait --tmux-args dump_stack
+....
+
+shows that traces are printed at `arch/x86/kernel/dumpstack.c`:
+
+....
+static void printk_stack_address(unsigned long address, int reliable,
+                 char *log_lvl)
+{
+    touch_nmi_watchdog();
+    printk("%s %s%pB\n", log_lvl, reliable ? "" : "? ", (void *)address);
+}
+....
+
+and `%pB` is documented at `Documentation/core-api/printk-formats.rst`:
+
+....
+If KALLSYMS are disabled then the symbol address is printed instead.
+....
+
+I wasn't able do disable `CONFIG_KALLSYMS` to test this this out however, it is being selected by some other option? But I then used `make menuconfig` to see which options select it, and they were all off...
+
+[[oops]]
+==== Kernel oops
+
+On oops, the shell still lives after.
+
+However we:
+
+* leave the normal control flow, and `oops after` never gets printed: an interrupt is serviced
+* cannot `rmmod oops` afterwards
+
+It is possible to make `oops` lead to panics always with:
+
+....
+echo 1 > /proc/sys/kernel/panic_on_oops
+insmod oops.ko
+....
+
+An oops stack trace looks like:
+
+....
+BUG: unable to handle kernel NULL pointer dereference at 0000000000000000
+IP: myinit+0x18/0x30 [oops]
+PGD dccf067 P4D dccf067 PUD dcc1067 PMD 0
+Oops: 0002 [#1] SMP NOPTI
+Modules linked in: oops(O+)
+CPU: 0 PID: 53 Comm: insmod Tainted: G           O     4.16.0 #6
+Hardware name: QEMU Standard PC (i440FX + PIIX, 1996), BIOS rel-1.11.0-0-g63451fca13-prebuilt.qemu-project.org 04/01/2014
+RIP: 0010:myinit+0x18/0x30 [oops]
+RSP: 0018:ffffc900000d3cb0 EFLAGS: 00000282
+RAX: 000000000000000b RBX: ffffffffc0000000 RCX: ffffffff81e3e3a8
+RDX: 0000000000000001 RSI: 0000000000000086 RDI: ffffffffc0001033
+RBP: ffffc900000d3e30 R08: 69796d2073706f6f R09: 000000000000013b
+R10: ffffea0000373280 R11: ffffffff822d8b2d R12: 0000000000000000
+R13: ffffffffc0002050 R14: ffffffffc0002000 R15: ffff88000dc934c8
+FS:  00007ffff7ff66a0(0000) GS:ffff88000fc00000(0000) knlGS:0000000000000000
+CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+CR2: 0000000000000000 CR3: 000000000dcd2000 CR4: 00000000000006f0
+Call Trace:
+ do_one_initcall+0x3e/0x170
+ do_init_module+0x5b/0x210
+ load_module+0x2035/0x29d0
+ ? SyS_finit_module+0xa8/0xb0
+ SyS_finit_module+0xa8/0xb0
+ do_syscall_64+0x6f/0x310
+ ? trace_hardirqs_off_thunk+0x1a/0x32
+ entry_SYSCALL_64_after_hwframe+0x42/0xb7
+RIP: 0033:0x7ffff7b36206
+RSP: 002b:00007fffffffeb78 EFLAGS: 00000206 ORIG_RAX: 0000000000000139
+RAX: ffffffffffffffda RBX: 000000000000005c RCX: 00007ffff7b36206
+RDX: 0000000000000000 RSI: 000000000069e010 RDI: 0000000000000003
+RBP: 000000000069e010 R08: 00007ffff7ddd320 R09: 0000000000000000
+R10: 00007ffff7ddd320 R11: 0000000000000206 R12: 0000000000000003
+R13: 00007fffffffef4b R14: 0000000000000000 R15: 0000000000000000
+Code: <c7> 04 25 00 00 00 00 00 00 00 00 e8 b2 33 09 c1 31 c0 c3 0f 1f 44
+RIP: myinit+0x18/0x30 [oops] RSP: ffffc900000d3cb0
+CR2: 0000000000000000
+---[ end trace 3cdb4e9d9842b503 ]---
+....
+
+To find the line that oopsed, look at the `RIP` register:
+
+....
+RIP: 0010:myinit+0x18/0x30 [oops]
+....
+
+and then on GDB:
+
+....
+./run-gdb
+....
+
+run
+
+....
+info line *(myinit+0x18)
+....
+
+which gives us the correct line:
+
+....
+Line 7 of "/root/linux-kernel-module-cheat/out/kernel_modules/x86_64/kernel_modules/panic.c" starts at address 0xbf00001c <myinit+28> and ends at 0xbf00002c <myexit>.
+....
+
+This-did not work on `arm` due to <<gdb-step-debug-kernel-module-arm>> so we need to either:
+
+* <<gdb-module_init>>
+* <<kernel-module-stack-trace-to-source-line>> post-mortem method
+
+==== dump_stack
+
+The `dump_stack` function produces a stack trace much like panic and oops, but causes no problems and we return to the normal control flow, and can cleanly remove the module afterwards:
+
+....
+insmod dump_stack.ko
+....
+
+Source: link:kernel_modules/dump_stack.c[]
+
+==== WARN_ON
+
+The `WARN_ON` macro basically just calls <<dump_stack,dump_stack>>.
+
+One extra side effect is that we can make it also panic with:
+
+....
+echo 1 > /proc/sys/kernel/panic_on_warn
+insmod warn_on.ko
+....
+
+Source: link:kernel_modules/warn_on.c[]
+
+Can also be activated with the `panic_on_warn` boot parameter.
+
+=== Pseudo filesystems
+
+Pseudo filesystems are filesystems that don't represent actual files in a hard disk, but rather allow us to do special operations on filesystem-related system calls.
+
+What each pseudo-file does for each related system call does is defined by its <<file-operations>>.
+
+Bibliography:
+
+* https://superuser.com/questions/1198292/what-is-a-pseudo-file-system-in-linux
+* https://en.wikipedia.org/wiki/Synthetic_file_system
+
+==== debugfs
+
+Debugfs is the simplest pseudo filesystem to play around with:
+
+....
+./debugfs.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/debugfs.c[]
+* link:rootfs_overlay/lkmc/debugfs.sh[]
+
+Debugfs is made specifically to help test kernel stuff. Just mount, set <<file-operations>>, and we are done.
+
+For this reason, it is the filesystem that we use whenever possible in our tests.
+
+`debugfs.sh` explicitly mounts a debugfs at a custom location, but the most common mount point is `/sys/kernel/debug`.
+
+This mount not done automatically by the kernel however: we, like most distros, do it from userland with our link:rootfs_overlay/etc/fstab[fstab].
+
+Debugfs support requires the kernel to be compiled with `CONFIG_DEBUG_FS=y`.
+
+Only the more basic file operations can be implemented in debugfs, e.g. `mmap` never gets called:
+
+* https://patchwork.kernel.org/patch/9252557/
+* https://github.com/torvalds/linux/blob/v4.9/fs/debugfs/file.c#L212
+
+Bibliography: https://github.com/chadversary/debugfs-tutorial
+
+==== procfs
+
+Procfs is just another fops entry point:
+
+....
+./procfs.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Procfs is a little less convenient than <<debugfs>>, but is more used in serious applications.
+
+Procfs can run all system calls, including ones that debugfs can't, e.g. <<mmap>>.
+
+Sources:
+
+* link:kernel_modules/procfs.c[]
+* link:rootfs_overlay/lkmc/procfs.sh[]
+
+Bibliography:
+
+* https://superuser.com/questions/619955/how-does-proc-work/1442571#1442571
+* https://stackoverflow.com/questions/8516021/proc-create-example-for-kernel-module/18924359#18924359
+
+[[proc-version]]
+===== /proc/version
+
+Its data is shared with `uname()`, which is a <<posix,POSIX C>> function and has a Linux syscall to back it up.
+
+Where the data comes from and how to modify it:
+
+* https://unix.stackexchange.com/questions/136959/where-does-uname-get-its-information-from/485962#485962
+* https://stackoverflow.com/questions/23424174/how-to-customize-or-remove-extra-linux-kernel-version-details-shown-at-boot
+
+In this repo, leaking host information, and to make builds more reproducible, we are setting:
+
+- user and date to dummy values with `KBUILD_BUILD_USER` and `KBUILD_BUILD_TIMESTAMP`
+- hostname to the kernel git commit with `KBUILD_BUILD_HOST` and  `KBUILD_BUILD_VERSION`
+
+A sample result is:
+
+....
+Linux version 4.19.0-dirty (lkmc@84df9525b0c27f3ebc2ebb1864fa62a97fdedb7d) (gcc version 6.4.0 (Buildroot 2018.05-00002-gbc60382b8f)) #1 SMP Thu Jan 1 00:00:00 UTC 1970
+....
+
+==== sysfs
+
+Sysfs is more restricted than <<procfs>>, as it does not take an arbitrary `file_operations`:
+
+....
+./sysfs.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/sysfs.c[]
+* link:rootfs_overlay/lkmc/sysfs.sh[]
+
+Vs procfs:
+
+* https://unix.stackexchange.com/questions/4884/what-is-the-difference-between-procfs-and-sysfs/382315#382315
+* https://stackoverflow.com/questions/37237835/how-to-attach-file-operations-to-sysfs-attribute-in-platform-driver
+* https://serverfault.com/questions/65261/linux-proc-sys-kernel-vs-sys-kernel
+
+You basically can only do `open`, `close`, `read`, `write`, and `lseek` on sysfs files.
+
+It is similar to a <<seq_file>> file operation, except that write is also implemented.
+
+TODO: what are those `kobject` structs? Make a more complex example that shows what they can do.
+
+Bibliography:
+
+* https://github.com/t3rm1n4l/kern-dev-tutorial/blob/1f036ef40fc4378f5c8d2842e55bcea7c6f8894a/05-sysfs/sysfs.c
+* https://www.kernel.org/doc/Documentation/kobject.txt
+* https://www.quora.com/What-are-kernel-objects-Kobj
+* http://www.makelinux.net/ldd3/chp-14-sect-1
+* https://www.win.tue.nl/~aeb/linux/lk/lk-13.html
+
+==== Character devices
+
+Character devices can have arbitrary <<file-operations>> associated to them:
+
+....
+./character_device.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:rootfs_overlay/lkmc/character_device.sh[]
+* link:rootfs_overlay/lkmc/mknoddev.sh[]
+* link:kernel_modules/character_device.c[]
+
+Unlike <<procfs>> entires, character device files are created with userland `mknod` or `mknodat` syscalls:
+
+....
+mknod </dev/path_to_dev> c <major> <minor>
+....
+
+Intuitively, for physical devices like keyboards, the major number maps to which driver, and the minor number maps to which device it is.
+
+A single driver can drive multiple compatible devices.
+
+The major and minor numbers can be observed with:
+
+....
+ls -l /dev/urandom
+....
+
+Output:
+
+....
+crw-rw-rw-    1 root     root        1,   9 Jun 29 05:45 /dev/urandom
+....
+
+which means:
+
+* `c` (first letter): this is a character device. Would be `b` for a block device.
+* `1,   9`: the major number is `1`, and the minor `9`
+
+To avoid device number conflicts when registering the driver we:
+
+* ask the kernel to allocate a free major number for us with: `register_chrdev(0`
+* find ouf which number was assigned by grepping `/proc/devices` for the kernel module name
+
+Bibliography: https://unix.stackexchange.com/questions/37829/understanding-character-device-or-character-special-files/371758#371758
+
+===== Automatically create character device file on insmod
+
+And also destroy it on `rmmod`:
+
+....
+./character_device_create.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/character_device_create.c[]
+* link:rootfs_overlay/lkmc/character_device_create.sh[]
+
+Bibliography: https://stackoverflow.com/questions/5970595/how-to-create-a-device-node-from-the-init-module-code-of-a-linux-kernel-module/45531867#45531867
+
+=== Pseudo files
+
+==== File operations
+
+File operations are the main method of userland driver communication. `struct file_operations` determines what the kernel will do on filesystem system calls of <<pseudo-filesystems>>.
+
+This example illustrates the most basic system calls: `open`, `read`, `write`, `close` and `lseek`:
+
+....
+./fops.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/fops.c[]
+* link:rootfs_overlay/lkmc/fops.sh[]
+
+Then give this a try:
+
+....
+sh -x ./fops.sh
+....
+
+We have put printks on each fop, so this allows you to see which system calls are being made for each command.
+
+No, there no official documentation: https://stackoverflow.com/questions/15213932/what-are-the-struct-file-operations-arguments
+
+==== seq_file
+
+Writing trivial read <<file-operations>> is repetitive and error prone. The `seq_file` API makes the process much easier for those trivial cases:
+
+....
+./seq_file.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/seq_file.c[]
+* link:rootfs_overlay/lkmc/seq_file.sh[]
+
+In this example we create a debugfs file that behaves just like a file that contains:
+
+....
+0
+1
+2
+....
+
+However, we only store a single integer in memory and calculate the file on the fly in an iterator fashion.
+
+`seq_file` does not provide `write`: https://stackoverflow.com/questions/30710517/how-to-implement-a-writable-proc-file-by-using-seq-file-in-a-driver-module
+
+Bibliography:
+
+* https://github.com/torvalds/linux/blob/v4.17/Documentation/filesystems/seq_file.txt[Documentation/filesystems/seq_file.txt]
+* https://stackoverflow.com/questions/25399112/how-to-use-a-seq-file-in-linux-modules
+
+===== seq_file single_open
+
+If you have the entire read output upfront, `single_open` is an even more convenient version of <<seq_file>>:
+
+....
+./seq_file.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/seq_file_single_open.c[]
+* link:rootfs_overlay/lkmc/seq_file_single_open.sh[]
+
+This example produces a debugfs file that behaves like a file that contains:
+
+....
+ab
+cd
+....
+
+==== poll
+
+The poll system call allows an user process to do a non-busy wait on a kernel event:
+
+....
+./poll.sh
+....
+
+Outcome: `jiffies` gets printed to stdout every second from userland.
+
+Sources:
+
+* link:kernel_modules/poll.c[]
+* link:rootfs_overlay/lkmc/poll.sh[]
+
+Typically, we are waiting for some hardware to make some piece of data available available to the kernel.
+
+The hardware notifies the kernel that the data is ready with an interrupt.
+
+To simplify this example, we just fake the hardware interrupts with a <<kthread>> that sleeps for a second in an infinite loop.
+
+Bibliography: https://stackoverflow.com/questions/30035776/how-to-add-poll-function-to-the-kernel-module-code/44645336#44645336
+
+==== ioctl
+
+The `ioctl` system call is the best way to pass an arbitrary number of parameters to the kernel in a single go:
+
+....
+./ioctl.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/ioctl.c[]
+* link:lkmc/ioctl.h[]
+* link:userland/kernel_modules/ioctl.c[]
+* link:rootfs_overlay/lkmc/ioctl.sh[]
+
+`ioctl` is one of the most important methods of communication with real device drivers, which often take several fields as input.
+
+`ioctl` takes as input:
+
+* an integer `request` : it usually identifies what type of operation we want to do on this call
+* an untyped pointer to memory: can be anything, but is typically a pointer to a `struct`
++
+The type of the `struct` often depends on the `request` input
++
+This `struct` is defined on a uapi-style C header that is used both to compile the kernel module and the userland executable.
++
+The fields of this `struct` can be thought of as arbitrary input parameters.
+
+And the output is:
+
+* an integer return value. `man ioctl` documents:
++
+____
+Usually, on success zero is returned. A few `ioctl()` requests use the return value as an output parameter and return a nonnegative value on success. On error, -1 is returned, and errno is set appropriately.
+____
+* the input pointer data may be overwritten to contain arbitrary output
+
+Bibliography:
+
+* https://stackoverflow.com/questions/2264384/how-do-i-use-ioctl-to-manipulate-my-kernel-module/44613896#44613896
+* https://askubuntu.com/questions/54239/problem-with-ioctl-in-a-simple-kernel-module/926675#926675
+
+==== mmap
+
+The `mmap` system call allows us to share memory between user and kernel space without copying:
+
+....
+./mmap.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/mmap.c[]
+* link:userland/kernel_modules/mmap.c[]
+* link:rootfs_overlay/lkmc/mmap.sh[]
+
+In this example, we make a tiny 4 byte kernel buffer available to user-space, and we then modify it on userspace, and check that the kernel can see the modification.
+
+`mmap`, like most more complex <<file-operations>>, does not work with <<debugfs>> as of 4.9, so we use a <<procfs>> file for it.
+
+Example adapted from: https://coherentmusings.wordpress.com/2014/06/10/implementing-mmap-for-transferring-data-from-user-space-to-kernel-space/
+
+Bibliography:
+
+* https://stackoverflow.com/questions/10760479/mmap-kernel-buffer-to-user-space/10770582#10770582
+* https://stackoverflow.com/questions/1623008/allocating-memory-for-user-space-from-kernel-thread
+* https://stackoverflow.com/questions/6967933/mmap-mapping-in-user-space-a-kernel-buffer-allocated-with-kmalloc
+* https://github.com/jeremytrimble/ezdma
+* https://github.com/simonjhall/dma
+* https://github.com/ikwzm/udmabuf
+
+==== Anonymous inode
+
+Anonymous inodes allow getting multiple file descriptors from a single filesystem entry, which reduces namespace pollution compared to creating multiple device files:
+
+....
+./anonymous_inode.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/anonymous_inode.c[]
+* link:lkmc/anonymous_inode.h[]
+* link:userland/kernel_modules/anonymous_inode.c[]
+* link:rootfs_overlay/lkmc/anonymous_inode.sh[]
+
+This example gets an anonymous inode via <<ioctl>> from a debugfs entry by using `anon_inode_getfd`.
+
+Reads to that inode return the sequence: `1`, `10`, `100`, ... `10000000`, `1`, `100`, ...
+
+Bibliography: https://stackoverflow.com/questions/4508998/what-is-an-anonymous-inode-in-linux/44388030#44388030
+
+==== netlink sockets
+
+Netlink sockets offer a socket API for kernel / userland communication:
+
+....
+./netlink.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/netlink.c[]
+* link:lkmc/netlink.h[]
+* link:userland/kernel_modules/netlink.c[]
+* link:rootfs_overlay/lkmc/netlink.sh[]
+
+Launch multiple user requests in parallel to stress our socket:
+
+....
+insmod netlink.ko sleep=1
+for i in `seq 16`; do ./netlink.out & done
+....
+
+TODO: what is the advantage over `read`, `write` and `poll`? https://stackoverflow.com/questions/16727212/how-netlink-socket-in-linux-kernel-is-different-from-normal-polling-done-by-appl
+
+Bibliography:
+
+* https://stackoverflow.com/questions/3299386/how-to-use-netlink-socket-to-communicate-with-a-kernel-module
+* https://en.wikipedia.org/wiki/Netlink
+
+=== kthread
+
+Kernel threads are managed exactly like userland threads; they also have a backing `task_struct`, and are scheduled with the same mechanism:
+
+....
+insmod kthread.ko
+....
+
+Source: link:kernel_modules/kthread.c[]
+
+Outcome: dmesg counts from `0` to `9` once every second infinitely many times:
+
+....
+0
+1
+2
+...
+8
+9
+0
+1
+2
+...
+....
+
+The count stops when we `rmmod`:
+
+....
+rmmod kthread
+....
+
+The sleep is done with `usleep_range`, see: xref:sleep[xrefstyle=full].
+
+Bibliography:
+
+* https://stackoverflow.com/questions/10177641/proper-way-of-handling-threads-in-kernel
+* https://stackoverflow.com/questions/4084708/how-to-wait-for-a-linux-kernel-thread-kthreadto-exit
+
+==== kthreads
+
+Let's launch two threads and see if they actually run in parallel:
+
+....
+insmod kthreads.ko
+....
+
+Source: link:kernel_modules/kthreads.c[]
+
+Outcome: two threads count to dmesg from `0` to `9` in parallel.
+
+Each line has output of form:
+
+....
+<thread_id> <count>
+....
+
+Possible very likely outcome:
+
+....
+
+1 0
+2 0
+1 1
+2 1
+1 2
+2 2
+1 3
+2 3
+....
+
+The threads almost always interleaved nicely, thus confirming that they are actually running in parallel.
+
+==== sleep
+
+Count to dmesg every one second from `0` up to `n - 1`:
+
+....
+insmod sleep.ko n=5
+....
+
+Source: link:kernel_modules/sleep.c[]
+
+The sleep is done with a call to https://github.com/torvalds/linux/blob/v4.17/kernel/time/timer.c#L1984[`usleep_range`] directly inside `module_init` for simplicity.
+
+Bibliography:
+
+* https://stackoverflow.com/questions/15994603/how-to-sleep-in-the-linux-kernel/44153288#44153288
+* https://github.com/torvalds/linux/blob/v4.17/Documentation/timers/timers-howto.txt
+
+==== Workqueues
+
+A more convenient front-end for <<kthread>>:
+
+....
+insmod workqueue_cheat.ko
+....
+
+Outcome: count from `0` to `9` infinitely many times
+
+Stop counting:
+
+....
+rmmod workqueue_cheat
+....
+
+Source: link:kernel_modules/workqueue_cheat.c[]
+
+The workqueue thread is killed after the worker function returns.
+
+We can't call the module just `workqueue.c` because there is already a built-in with that name: https://unix.stackexchange.com/questions/364956/how-can-insmod-fail-with-kernel-module-is-already-loaded-even-is-lsmod-does-not
+
+Bibliography: https://github.com/torvalds/linux/blob/v4.17/Documentation/core-api/workqueue.rst
+
+===== Workqueue from workqueue
+
+Count from `0` to `9` every second infinitely many times by scheduling a new work item from a work item:
+
+....
+insmod work_from_work.ko
+....
+
+Stop:
+
+....
+rmmod work_from_work
+....
+
+The sleep is done indirectly through: https://github.com/torvalds/linux/blob/v4.17/include/linux/workqueue.h#L522[`queue_delayed_work`], which waits the specified time before scheduling the work.
+
+Source: link:kernel_modules/work_from_work.c[]
+
+==== schedule
+
+Let's block the entire kernel! Yay:
+
+.....
+./run --eval-after 'dmesg -n 1;insmod schedule.ko schedule=0'
+.....
+
+Outcome: the system hangs, the only way out is to kill the VM.
+
+Source: link:kernel_modules/schedule.c[]
+
+kthreads only allow interrupting if you call `schedule()`, and the `schedule=0` <<kernel-module-parameters,kernel module parameter>> turns it off.
+
+Sleep functions like `usleep_range` also end up calling schedule.
+
+If we allow `schedule()` to be called, then the system becomes responsive:
+
+.....
+./run --eval-after 'dmesg -n 1;insmod schedule.ko schedule=1'
+.....
+
+
+and we can observe the counting with:
+
+....
+dmesg -w
+....
+
+The system also responds if we <<number-of-cores,add another core>>:
+
+....
+./run --cpus 2 --eval-after 'dmesg -n 1;insmod schedule.ko schedule=0'
+....
+
+==== Wait queues
+
+Wait queues are a way to make a thread sleep until an event happens on the queue:
+
+....
+insmod wait_queue.c
+....
+
+Dmesg output:
+
+....
+0 0
+1 0
+2 0
+# Wait one second.
+0 1
+1 1
+2 1
+# Wait one second.
+0 2
+1 2
+2 2
+...
+....
+
+Stop the count:
+
+....
+rmmod wait_queue
+....
+
+Source: link:kernel_modules/wait_queue.c[]
+
+This example launches three threads:
+
+* one thread generates events every with https://github.com/torvalds/linux/blob/v4.17/include/linux/wait.h#L195[`wake_up`]
+* the other two threads wait for that with https://github.com/torvalds/linux/blob/v4.17/include/linux/wait.h#L286[`wait_event`], and print a dmesg when it happens.
++
+The `wait_event` macro works a bit like:
++
+....
+while (!cond)
+    sleep_until_event
+....
+
+=== Timers
+
+Count from `0` to `9` infinitely many times in 1 second intervals using timers:
+
+....
+insmod timer.ko
+....
+
+Stop counting:
+
+....
+rmmod timer
+....
+
+Source: link:kernel_modules/timer.c[]
+
+Timers are callbacks that run when an interrupt happens, from the interrupt context itself.
+
+Therefore they produce more accurate timing than thread scheduling, which is more complex, but you can't do too much work inside of them.
+
+Bibliography:
+
+* https://stackoverflow.com/questions/10812858/timers-in-linux-device-drivers
+* https://gist.github.com/yagihiro/310149
+
+=== IRQ
+
+==== irq.ko
+
+Brute force monitor every shared interrupt that will accept us:
+
+....
+./run --eval-after 'insmod irq.ko' --graphic
+....
+
+Source: link:kernel_modules/irq.c[].
+
+Now try the following:
+
+* press a keyboard key and then release it after a few seconds
+* press a mouse key, and release it after a few seconds
+* move the mouse around
+
+Outcome: dmesg shows which IRQ was fired for each action through messages of type:
+
+....
+handler irq = 1 dev = 250
+....
+
+`dev` is the character device for the module and never changes, as can be confirmed by:
+
+....
+grep lkmc_irq /proc/devices
+....
+
+The IRQs that we observe are:
+
+* `1` for keyboard press and release.
++
+If you hold the key down for a while, it starts firing at a constant rate. So this happens at the hardware level!
+* `12` mouse actions
+
+This only works if for IRQs for which the other handlers are registered as `IRQF_SHARED`.
+
+We can see which ones are those, either via dmesg messages of type:
+
+....
+genirq: Flags mismatch irq 0. 00000080 (myirqhandler0) vs. 00015a00 (timer)
+request_irq irq = 0 ret = -16
+request_irq irq = 1 ret = 0
+....
+
+which indicate that `0` is not, but `1` is, or with:
+
+....
+cat /proc/interrupts
+....
+
+which shows:
+
+....
+  0:         31   IO-APIC   2-edge      timer
+  1:          9   IO-APIC   1-edge      i8042, myirqhandler0
+....
+
+so only `1` has `myirqhandler0` attached but not `0`.
+
+The <<qemu-monitor>> also has some interrupt statistics for x86_64:
+
+....
+./qemu-monitor info irq
+....
+
+TODO: properly understand how each IRQ maps to what number.
+
+==== dummy-irq
+
+The Linux kernel v4.16 mainline also has a `dummy-irq` module at `drivers/misc/dummy-irq.c` for monitoring a single IRQ.
+
+We build it by default with:
+
+....
+CONFIG_DUMMY_IRQ=m
+....
+
+And then you can do
+
+....
+./run --graphic
+....
+
+and in guest:
+
+....
+modprobe dummy-irq irq=1
+....
+
+Outcome: when you click a key on the keyboard, dmesg shows:
+
+....
+dummy-irq: interrupt occurred on IRQ 1
+....
+
+However, this module is intended to fire only once as can be seen from its source:
+
+....
+    static int count = 0;
+
+    if (count == 0) {
+        printk(KERN_INFO "dummy-irq: interrupt occurred on IRQ %d\n",
+            irq);
+        count++;
+    }
+....
+
+and furthermore interrupt `1` and `12` happen immediately TODO why, were they somehow pending?
+
+So so see something interesting, you need to monitor an interrupt that is more rare than the keyboard, e.g. <<platform_device>>.
+
+==== /proc/interrupts
+
+In the guest with <<qemu-graphic-mode>>:
+
+....
+watch -n 1 cat /proc/interrupts
+....
+
+Then see how clicking the mouse and keyboard affect the interrupt counts.
+
+This confirms that:
+
+* 1: keyboard
+* 12: mouse click and drags
+
+The module also shows which handlers are registered for each IRQ, as we have observed at <<irq-ko>>
+
+When in text mode, we can also observe interrupt line 4 with handler `ttyS0` increase continuously as IO goes through the UART.
+
+=== Kernel utility functions
+
+https://github.com/torvalds/linux/blob/v4.17/Documentation/core-api/kernel-api.rst
+
+==== kstrto
+
+Convert a string to an integer:
+
+....
+./kstrto.sh
+echo $?
+....
+
+Outcome: the test passes:
+
+....
+0
+....
+
+Sources:
+
+* link:kernel_modules/kstrto.c[]
+* link:rootfs_overlay/lkmc/kstrto.sh[]
+
+Bibliography: https://stackoverflow.com/questions/6139493/how-convert-char-to-int-in-linux-kernel/49811658#49811658
+
+==== virt_to_phys
+
+Convert a virtual address to physical:
+
+....
+insmod virt_to_phys.ko
+cat /sys/kernel/debug/lkmc_virt_to_phys
+....
+
+Source: link:kernel_modules/virt_to_phys.c[]
+
+Sample output:
+
+....
+*kmalloc_ptr = 0x12345678
+kmalloc_ptr = ffff88000e169ae8
+virt_to_phys(kmalloc_ptr) = 0xe169ae8
+static_var = 0x12345678
+&static_var = ffffffffc0002308
+virt_to_phys(&static_var) = 0x40002308
+....
+
+We can confirm that the `kmalloc_ptr` translation worked with:
+
+....
+./qemu-monitor 'xp 0xe169ae8'
+....
+
+which reads four bytes from a given physical address, and gives the expected:
+
+....
+000000000e169ae8: 0x12345678
+....
+
+TODO it only works for kmalloc however, for the static variable:
+
+....
+./qemu-monitor 'xp 0x40002308'
+....
+
+it gave a wrong value of `00000000`.
+
+Bibliography:
+
+* https://stackoverflow.com/questions/5748492/is-there-any-api-for-determining-the-physical-address-from-virtual-address-in-li/45128487#45128487
+* https://stackoverflow.com/questions/39134990/mmap-of-dev-mem-fails-with-invalid-argument-for-virt-to-phys-address-but-addre/45127582#45127582
+* https://stackoverflow.com/questions/43325205/can-we-use-virt-to-phys-for-user-space-memory-in-kernel-module
+
+===== Userland physical address experiments
+
+Only tested in x86_64.
+
+The Linux kernel exposes physical addresses to userland through:
+
+* `/proc/<pid>/maps`
+* `/proc/<pid>/pagemap`
+* `/dev/mem`
+
+In this section we will play with them.
+
+First get a virtual address to play with:
+
+....
+./posix/virt_to_phys_test.out &
+....
+
+Source: link:userland/posix/virt_to_phys_test.c[]
+
+Sample output:
+
+....
+vaddr 0x600800
+pid 110
+....
+
+The program:
+
+* allocates a `volatile` variable and sets is value to `0x12345678`
+* prints the virtual address of the variable, and the program PID
+* runs a while loop until until the value of the variable gets mysteriously changed somehow, e.g. by nasty tinkerers like us
+
+Then, translate the virtual address to physical using `/proc/<pid>/maps` and `/proc/<pid>/pagemap`:
+
+....
+./linux/virt_to_phys_user.out 110 0x600800
+....
+
+Sample output physical address:
+
+....
+0x7c7b800
+....
+
+Source: link:userland/linux/virt_to_phys_user.c[]
+
+Now we can verify that `linux/virt_to_phys_user.out` gave the correct physical address in the following ways:
+
+* <<qemu-xp>>
+* <<dev-mem>>
+
+Bibliography:
+
+* https://stackoverflow.com/questions/17021214/decode-proc-pid-pagemap-entry/45126141#45126141
+* https://stackoverflow.com/questions/6284810/proc-pid-pagemaps-and-proc-pid-maps-linux/45500208#45500208
+
+====== QEMU xp
+
+The `xp` <<qemu-monitor>> command reads memory at a given physical address.
+
+First launch `linux/virt_to_phys_user.out` as described at <<userland-physical-address-experiments>>.
+
+On a second terminal, use QEMU to read the physical address:
+
+....
+./qemu-monitor 'xp 0x7c7b800'
+....
+
+Output:
+
+....
+0000000007c7b800: 0x12345678
+....
+
+Yes!!! We read the correct value from the physical address.
+
+We could not find however to write to memory from the QEMU monitor, boring.
+
+[[dev-mem]]
+====== /dev/mem
+
+`/dev/mem` exposes access to physical addresses, and we use it through the convenient `devmem` BusyBox utility.
+
+First launch `linux/virt_to_phys_user.out` as described at <<userland-physical-address-experiments>>.
+
+Next, read from the physical address:
+
+....
+devmem 0x7c7b800
+....
+
+Possible output:
+
+....
+Memory mapped at address 0x7ff7dbe01000.
+Value at address 0X7C7B800 (0x7ff7dbe01800): 0x12345678
+....
+
+which shows that the physical memory contains the expected value `0x12345678`.
+
+`0x7ff7dbe01000` is a new virtual address that `devmem` maps to the physical address to be able to read from it.
+
+Modify the physical memory:
+
+....
+devmem 0x7c7b800 w 0x9abcdef0
+....
+
+After one second, we see on the screen:
+
+....
+i 9abcdef0
+[1]+  Done                       ./posix/virt_to_phys_test.out
+....
+
+so the value changed, and the `while` loop exited!
+
+This example requires:
+
+* `CONFIG_STRICT_DEVMEM=n`, otherwise `devmem` fails with:
++
+....
+devmem: mmap: Operation not permitted
+....
+* `nopat` kernel parameter
+
+which we set by default.
+
+Bibliography: https://stackoverflow.com/questions/11891979/how-to-access-mmaped-dev-mem-without-crashing-the-linux-kernel
+
+====== pagemap_dump.out
+
+Dump the physical address of all pages mapped to a given process using `/proc/<pid>/maps` and `/proc/<pid>/pagemap`.
+
+First launch `linux/virt_to_phys_user.out` as described at <<userland-physical-address-experiments>>. Suppose that the output was:
+
+....
+# ./posix/virt_to_phys_test.out &
+vaddr 0x601048
+pid 63
+# ./linux/virt_to_phys_user.out 63 0x601048
+0x1a61048
+....
+
+Now obtain the page map for the process:
+
+....
+./linux/pagemap_dump.out 63
+....
+
+Sample output excerpt:
+
+....
+vaddr pfn soft-dirty file/shared swapped present library
+400000 1ede 0 1 0 1 ./posix/virt_to_phys_test.out
+600000 1a6f 0 0 0 1 ./posix/virt_to_phys_test.out
+601000 1a61 0 0 0 1 ./posix/virt_to_phys_test.out
+602000 2208 0 0 0 1 [heap]
+603000 220b 0 0 0 1 [heap]
+7ffff78ec000 1fd4 0 1 0 1 /lib/libuClibc-1.0.30.so
+....
+
+Source: link:userland/linux/pagemap_dump.c[]
+
+Adapted from: https://github.com/dwks/pagemap/blob/8a25747bc79d6080c8b94eac80807a4dceeda57a/pagemap2.c
+
+Meaning of the flags:
+
+* `vaddr`: first virtual address of a page the belongs to the process. Notably:
++
+....
+./run-toolchain readelf -- -l "$(./getvar userland_build_dir)/posix/virt_to_phys_test.out"
+....
++
+contains:
++
+....
+  Type           Offset             VirtAddr           PhysAddr
+                 FileSiz            MemSiz              Flags  Align
+...
+  LOAD           0x0000000000000000 0x0000000000400000 0x0000000000400000
+                 0x000000000000075c 0x000000000000075c  R E    0x200000
+  LOAD           0x0000000000000e98 0x0000000000600e98 0x0000000000600e98
+                 0x00000000000001b4 0x0000000000000218  RW     0x200000
+
+ Section to Segment mapping:
+  Segment Sections...
+...
+   02     .interp .hash .dynsym .dynstr .rela.plt .init .plt .text .fini .rodata .eh_frame_hdr .eh_frame
+   03     .ctors .dtors .jcr .dynamic .got.plt .data .bss
+....
++
+from which we deduce that:
++
+** `400000` is the text segment
+** `600000` is the data segment
+* `pfn`: add three zeroes to it, and you have the physical address.
++
+Three zeroes is 12 bits which is 4kB, which is the size of a page.
++
+For example, the virtual address `0x601000` has `pfn` of `0x1a61`, which means that its physical address is `0x1a61000`
++
+This is consistent with what `linux/virt_to_phys_user.out` told us: the virtual address `0x601048` has physical address `0x1a61048`.
++
+`048` corresponds to the three last zeroes, and is the offset within the page.
++
+Also, this value falls inside `0x601000`, which as previously analyzed is the data section, which is the normal location for global variables such as ours.
+* `soft-dirty`: TODO
+* `file/shared`: TODO. `1` seems to indicate that the page can be shared across processes, possibly for read-only pages? E.g. the text segment has `1`, but the data has `0`.
+* `swapped`: TODO swapped to disk?
+* `present`: TODO vs swapped?
+* `library`: which executable owns that page
+
+This program works in two steps:
+
+* parse the human readable lines lines from `/proc/<pid>/maps`. This files contains lines of form:
++
+....
+7ffff7b6d000-7ffff7bdd000 r-xp 00000000 fe:00 658                        /lib/libuClibc-1.0.22.so
+....
++
+which tells us that:
++
+** `7f8af99f8000-7f8af99ff000` is a virtual address range that belong to the process, possibly containing multiple pages.
+** `/lib/libuClibc-1.0.22.so` is the name of the library that owns that memory
+* loop over each page of each address range, and ask `/proc/<pid>/pagemap` for more information about that page, including the physical address
+
+=== Linux kernel tracing
+
+Good overviews:
+
+* http://www.brendangregg.com/blog/2015-07-08/choosing-a-linux-tracer.html by Brendan Greg, AKA the master of tracing. Also: https://github.com/brendangregg/perf-tools
+* https://jvns.ca/blog/2017/07/05/linux-tracing-systems/
+
+I hope to have examples of all methods some day, since I'm obsessed with visibility.
+
+==== CONFIG_PROC_EVENTS
+
+Logs proc events such as process creation to a link:kernel_modules/netlink.c[netlink socket].
+
+We then have a userland program that listens to the events and prints them out:
+
+....
+# ./linux/proc_events.out &
+# set mcast listen ok
+# sleep 2 & sleep 1
+fork: parent tid=48 pid=48 -> child tid=79 pid=79
+fork: parent tid=48 pid=48 -> child tid=80 pid=80
+exec: tid=80 pid=80
+exec: tid=79 pid=79
+# exit: tid=80 pid=80 exit_code=0
+exit: tid=79 pid=79 exit_code=0
+echo a
+a
+#
+....
+
+Source: link:userland/linux/proc_events.c[]
+
+TODO: why `exit: tid=79` shows after `exit: tid=80`?
+
+Note how `echo a` is a Bash built-in, and therefore does not spawn a new process.
+
+TODO: why does this produce no output?
+
+....
+./linux/proc_events.out >f &
+....
+
+* https://stackoverflow.com/questions/6075013/detect-launching-of-programs-on-linux-platform/8255487#8255487
+* https://serverfault.com/questions/199654/does-anyone-know-a-simple-way-to-monitor-root-process-spawn
+* https://unix.stackexchange.com/questions/260162/how-to-track-newly-created-processes
+
+TODO can you get process data such as UID and process arguments? It seems not since `exec_proc_event` contains so little data: https://github.com/torvalds/linux/blob/v4.16/include/uapi/linux/cn_proc.h#L80 We could try to immediately read it from `/proc`, but there is a risk that the process finished and another one took its PID, so it wouldn't be reliable.
+
+* https://unix.stackexchange.com/questions/163681/print-pids-and-names-of-processes-as-they-are-created/163689 requests process name
+* https://serverfault.com/questions/199654/does-anyone-know-a-simple-way-to-monitor-root-process-spawn requests UID
+
+===== CONFIG_PROC_EVENTS aarch64
+
+0111ca406bdfa6fd65a2605d353583b4c4051781 was failing with:
+
+....
+>>> kernel_modules 1.0 Building
+/usr/bin/make -j8 -C '/linux-kernel-module-cheat//out/aarch64/buildroot/build/kernel_modules-1.0/user' BR2_PACKAGE_OPENBLAS="" CC="/linux-kernel-module-cheat//out/aarch64/buildroot/host/bin/aarch64-buildroot-linux-uclibc-gcc" LD="/linux-kernel-module-cheat//out/aarch64/buildroot/host/bin/aarch64-buildroot-linux-uclibc-ld"
+/linux-kernel-module-cheat//out/aarch64/buildroot/host/bin/aarch64-buildroot-linux-uclibc-gcc  -ggdb3 -fopenmp -O0 -std=c99 -Wall -Werror -Wextra -o 'proc_events.out' 'proc_events.c'
+In file included from /linux-kernel-module-cheat//out/aarch64/buildroot/host/aarch64-buildroot-linux-uclibc/sysroot/usr/include/signal.h:329:0,
+                 from proc_events.c:12:
+/linux-kernel-module-cheat//out/aarch64/buildroot/host/aarch64-buildroot-linux-uclibc/sysroot/usr/include/sys/ucontext.h:50:16: error: field ‘uc_mcontext’ has incomplete type
+     mcontext_t uc_mcontext;
+                ^~~~~~~~~~~
+....
+
+so we commented it out.
+
+Related threads:
+
+* https://mailman.uclibc-ng.org/pipermail/devel/2018-January/001624.html
+* https://github.com/DynamoRIO/dynamorio/issues/2356
+
+If we try to naively update uclibc to 1.0.29 with `buildroot_override`, which contains the above mentioned patch, clean `aarch64` test build fails with:
+
+....
+../utils/ldd.c: In function 'elf_find_dynamic':
+../utils/ldd.c:238:12: warning: cast to pointer from integer of different size [-Wint-to-pointer-cast]
+     return (void *)byteswap_to_host(dynp->d_un.d_val);
+            ^
+/tmp/user/20321/cciGScKB.o: In function `process_line_callback':
+msgmerge.c:(.text+0x22): undefined reference to `escape'
+/tmp/user/20321/cciGScKB.o: In function `process':
+msgmerge.c:(.text+0xf6): undefined reference to `poparser_init'
+msgmerge.c:(.text+0x11e): undefined reference to `poparser_feed_line'
+msgmerge.c:(.text+0x128): undefined reference to `poparser_finish'
+collect2: error: ld returned 1 exit status
+Makefile.in:120: recipe for target '../utils/msgmerge.host' failed
+make[2]: *** [../utils/msgmerge.host] Error 1
+make[2]: *** Waiting for unfinished jobs....
+/tmp/user/20321/ccF8V8jF.o: In function `process':
+msgfmt.c:(.text+0xbf3): undefined reference to `poparser_init'
+msgfmt.c:(.text+0xc1f): undefined reference to `poparser_feed_line'
+msgfmt.c:(.text+0xc2b): undefined reference to `poparser_finish'
+collect2: error: ld returned 1 exit status
+Makefile.in:120: recipe for target '../utils/msgfmt.host' failed
+make[2]: *** [../utils/msgfmt.host] Error 1
+package/pkg-generic.mk:227: recipe for target '/data/git/linux-kernel-module-cheat/out/aarch64/buildroot/build/uclibc-custom/.stamp_built' failed
+make[1]: *** [/data/git/linux-kernel-module-cheat/out/aarch64/buildroot/build/uclibc-custom/.stamp_built] Error 2
+Makefile:79: recipe for target '_all' failed
+make: *** [_all] Error 2
+....
+
+Buildroot master has already moved to uclibc 1.0.29 at f8546e836784c17aa26970f6345db9d515411700, but it is not yet in any tag... so I'm not tempted to update it yet just for this.
+
+==== ftrace
+
+Trace a single function:
+
+....
+cd /sys/kernel/debug/tracing/
+
+# Stop tracing.
+echo 0 > tracing_on
+
+# Clear previous trace.
+echo > trace
+
+# List the available tracers, and pick one.
+cat available_tracers
+echo function > current_tracer
+
+# List all functions that can be traced
+# cat available_filter_functions
+# Choose one.
+echo __kmalloc > set_ftrace_filter
+# Confirm that only __kmalloc is enabled.
+cat enabled_functions
+
+echo 1 > tracing_on
+
+# Latest events.
+head trace
+
+# Observe trace continuously, and drain seen events out.
+cat trace_pipe &
+....
+
+Sample output:
+
+....
+# tracer: function
+#
+# entries-in-buffer/entries-written: 97/97   #P:1
+#
+#                              _-----=> irqs-off
+#                             / _----=> need-resched
+#                            | / _---=> hardirq/softirq
+#                            || / _--=> preempt-depth
+#                            ||| /     delay
+#           TASK-PID   CPU#  ||||    TIMESTAMP  FUNCTION
+#              | |       |   ||||       |         |
+            head-228   [000] ....   825.534637: __kmalloc <-load_elf_phdrs
+            head-228   [000] ....   825.534692: __kmalloc <-load_elf_binary
+            head-228   [000] ....   825.534815: __kmalloc <-load_elf_phdrs
+            head-228   [000] ....   825.550917: __kmalloc <-__seq_open_private
+            head-228   [000] ....   825.550953: __kmalloc <-tracing_open
+            head-229   [000] ....   826.756585: __kmalloc <-load_elf_phdrs
+            head-229   [000] ....   826.756627: __kmalloc <-load_elf_binary
+            head-229   [000] ....   826.756719: __kmalloc <-load_elf_phdrs
+            head-229   [000] ....   826.773796: __kmalloc <-__seq_open_private
+            head-229   [000] ....   826.773835: __kmalloc <-tracing_open
+            head-230   [000] ....   827.174988: __kmalloc <-load_elf_phdrs
+            head-230   [000] ....   827.175046: __kmalloc <-load_elf_binary
+            head-230   [000] ....   827.175171: __kmalloc <-load_elf_phdrs
+....
+
+Trace all possible functions, and draw a call graph:
+
+....
+echo 1 > max_graph_depth
+echo 1 > events/enable
+echo function_graph > current_tracer
+....
+
+Sample output:
+
+....
+# CPU  DURATION                  FUNCTION CALLS
+# |     |   |                     |   |   |   |
+ 0)   2.173 us    |                  } /* ntp_tick_length */
+ 0)               |                  timekeeping_update() {
+ 0)   4.176 us    |                    ntp_get_next_leap();
+ 0)   5.016 us    |                    update_vsyscall();
+ 0)               |                    raw_notifier_call_chain() {
+ 0)   2.241 us    |                      notifier_call_chain();
+ 0) + 19.879 us   |                    }
+ 0)   3.144 us    |                    update_fast_timekeeper();
+ 0)   2.738 us    |                    update_fast_timekeeper();
+ 0) ! 117.147 us  |                  }
+ 0)               |                  _raw_spin_unlock_irqrestore() {
+ 0)   4.045 us    |                    _raw_write_unlock_irqrestore();
+ 0) + 22.066 us   |                  }
+ 0) ! 265.278 us  |                } /* update_wall_time */
+....
+
+TODO: what do `+` and `!` mean?
+
+Each `enable` under the `events/` tree enables a certain set of functions, the higher the `enable` more functions are enabled.
+
+TODO: can you get function arguments? https://stackoverflow.com/questions/27608752/does-ftrace-allow-capture-of-system-call-arguments-to-the-linux-kernel-or-only
+
+===== ftrace system calls
+
+https://stackoverflow.com/questions/29840213/how-do-i-trace-a-system-call-in-linux/51856306#51856306
+
+===== trace-cmd
+
+TODO example:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_TRACE_CMD=y'
+....
+
+==== Kprobes
+
+kprobes is an instrumentation mechanism that injects arbitrary code at a given address in a trap instruction, much like GDB. Oh, the good old kernel. :-)
+
+....
+./build-linux --config 'CONFIG_KPROBES=y'
+....
+
+Then on guest:
+
+....
+insmod kprobe_example.ko
+sleep 4 & sleep 4 &'
+....
+
+Outcome: dmesg outputs on every fork:
+
+....
+<_do_fork> pre_handler: p->addr = 0x00000000e1360063, ip = ffffffff810531d1, flags = 0x246
+<_do_fork> post_handler: p->addr = 0x00000000e1360063, flags = 0x246
+<_do_fork> pre_handler: p->addr = 0x00000000e1360063, ip = ffffffff810531d1, flags = 0x246
+<_do_fork> post_handler: p->addr = 0x00000000e1360063, flags = 0x246
+....
+
+Source: link:kernel_modules/kprobe_example.c[]
+
+TODO: it does not work if I try to immediately launch `sleep`, why?
+
+....
+insmod kprobe_example.ko
+sleep 4 & sleep 4 &
+....
+
+I don't think your code can refer to the surrounding kernel code however: the only visible thing is the value of the registers.
+
+You can then hack it up to read the stack and read argument values, but do you really want to?
+
+There is also a kprobes + ftrace based mechanism with `CONFIG_KPROBE_EVENTS=y` which does read the memory for us based on format strings that indicate type... https://github.com/torvalds/linux/blob/v4.16/Documentation/trace/kprobetrace.txt Horrendous. Used by: https://github.com/brendangregg/perf-tools/blob/98d42a2a1493d2d1c651a5c396e015d4f082eb20/execsnoop
+
+Bibliography:
+
+* https://github.com/torvalds/linux/blob/v4.16/Documentation/kprobes.txt
+* https://github.com/torvalds/linux/blob/v4.17/samples/kprobes/kprobe_example.c
+
+==== Count boot instructions
+
+TODO: didn't port during refactor after 3b0a343647bed577586989fb702b760bd280844a. Reimplementing should not be hard.
+
+* https://www.quora.com/How-many-instructions-does-a-typical-Linux-kernel-boot-take
+* https://github.com/cirosantilli/chat/issues/31
+* https://rwmj.wordpress.com/2016/03/17/tracing-qemu-guest-execution/
+* `qemu/docs/tracing.txt` and `qemu/docs/replay.txt`
+* https://stackoverflow.com/questions/39149446/how-to-use-qemus-simple-trace-backend/46497873#46497873
+
+Results (boot not excluded) are shown at: xref:table-boot-instruction-counts[xrefstyle=full]
+
+[[table-boot-instruction-counts]]
+.Boot instruction counts for various setups
+[options="header"]
+|===
+|Commit |Arch |Simulator |Instruction count
+
+|7228f75ac74c896417fb8c5ba3d375a14ed4d36b
+|arm
+|QEMU
+|680k
+
+|7228f75ac74c896417fb8c5ba3d375a14ed4d36b
+|arm
+|gem5 AtomicSimpleCPU
+|160M
+
+|7228f75ac74c896417fb8c5ba3d375a14ed4d36b
+|arm
+|gem5 HPI
+|155M
+
+|7228f75ac74c896417fb8c5ba3d375a14ed4d36b
+|x86_64
+|QEMU
+|3M
+
+|7228f75ac74c896417fb8c5ba3d375a14ed4d36b
+|x86_64
+|gem5 AtomicSimpleCPU
+|528M
+
+|===
+
+QEMU:
+
+....
+./trace-boot --arch x86_64
+....
+
+sample output:
+
+....
+instructions 1833863
+entry_address 0x1000000
+instructions_firmware 20708
+....
+
+gem5:
+
+....
+./run --arch aarch64 --emulator gem5 --eval 'm5 exit'
+# Or:
+# ./run --arch aarch64 --emulator gem5 --eval 'm5 exit' -- --cpu-type=HPI --caches
+./gem5-stat --arch aarch64 sim_insts
+....
+
+Notes:
+
+* `0x1000000` is the address where QEMU puts the Linux kernel at with `-kernel` in x86.
++
+It can be found from:
++
+....
+./run-toolchain readelf -- -e "$(./getvar vmlinux)" | grep Entry
+....
++
+TODO confirm further. If I try to break there with:
++
+....
+./run-gdb *0x1000000
+....
++
+but I have no corresponding source line. Also note that this line is not actually the first line, since the kernel messages such as `early console in extract_kernel` have already shown on screen at that point. This does not break at all:
++
+....
+./run-gdb extract_kernel
+....
++
+It only appears once on every log I've seen so far, checked with `grep 0x1000000 trace.txt`
++
+Then when we count the instructions that run before the kernel entry point, there is only about 100k instructions, which is insignificant compared to the kernel boot itself.
++
+TODO `--arch arm` and `--arch aarch64` does not count firmware instructions properly because the entry point address of the ELF file (`ffffff8008080000` for `aarch64`) does not show up on the trace at all. Tested on https://github.com/cirosantilli/linux-kernel-module-cheat/commit/f8c0502bb2680f2dbe7c1f3d7958f60265347005[f8c0502bb2680f2dbe7c1f3d7958f60265347005].
+* We can also discount the instructions after `init` runs by using `readelf` to get the initial address of `init`. One easy way to do that now is to just run:
++
+....
+./run-gdb --userland "$(./getvar userland_build_dir)/linux/poweroff.out" main
+....
++
+And get that from the traces, e.g. if the address is `4003a0`, then we search:
++
+....
+grep -n 4003a0 trace.txt
+....
++
+I have observed a single match for that instruction, so it must be the init, and there were only 20k instructions after it, so the impact is negligible.
+* to disable networking. Is replacing `init` enough?
++
+--
+** https://superuser.com/questions/181254/how-do-you-boot-linux-with-networking-disabled
+** https://superuser.com/questions/684005/how-does-one-permanently-disable-gnu-linux-networking/1255015#1255015
+--
++
+`CONFIG_NET=n` did not significantly reduce instruction counts, so maybe replacing `init` is enough.
+* gem5 simulates memory latencies. So I think that the CPU loops idle while waiting for memory, and counts will be higher.
+
+=== Linux kernel hardening
+
+Make it harder to get hacked and easier to notice that you were, at the cost of some (small?) runtime overhead.
+
+==== CONFIG_FORTIFY_SOURCE
+
+Detects buffer overflows for us:
+
+....
+./build-linux --config 'CONFIG_FORTIFY_SOURCE=y' --linux-build-id fortify
+./build-modules --clean
+./build-modules
+./build-buildroot
+./run --eval-after 'insmod strlen_overflow.ko' --linux-build-id fortify
+....
+
+Possible dmesg output:
+
+....
+strlen_overflow: loading out-of-tree module taints kernel.
+detected buffer overflow in strlen
+------------[ cut here ]------------
+....
+
+followed by a trace.
+
+You may not get this error because this depends on `strlen` overflowing at least until the next page: if a random `\0` appears soon enough, it won't blow up as desired.
+
+TODO not always reproducible. Find a more reproducible failure. I could not observe it on:
+
+....
+insmod memcpy_overflow.ko
+....
+
+Source: link:kernel_modules/strlen_overflow.c[]
+
+Bibliography: https://www.reddit.com/r/hacking/comments/8h4qxk/what_a_buffer_overflow_in_the_linux_kernel_looks/
+
+==== Linux security modules
+
+https://en.wikipedia.org/wiki/Linux_Security_Modules
+
+===== SELinux
+
+TODO get a hello world permission control working:
+
+....
+./build-linux \
+  --config-fragment linux_config/selinux \
+  --linux-build-id selinux \
+;
+./build-buildroot --config 'BR2_PACKAGE_REFPOLICY=y'
+./run --enable-kvm --linux-build-id selinux
+....
+
+Source: link:linux_config/selinux[]
+
+This builds:
+
+* `BR2_PACKAGE_REFPOLICY`, which includes a reference `/etc/selinux/config` policy: https://github.com/SELinuxProject/refpolicy
++
+refpolicy in turn depends on:
+* `BR2_PACKAGE_SETOOLS`, which contains tools such as `getenforced`: https://github.com/SELinuxProject/setools
++
+setools depends on:
+* `BR2_PACKAGE_LIBSELINUX`, which is the backing userland library
+
+After boot finishes, we see:
+
+....
+Starting auditd: mkdir: invalid option -- 'Z'
+....
+
+which comes from `/etc/init.d/S01auditd`, because BusyBox' `mkdir` does not have the crazy `-Z` option like Ubuntu. That's amazing!
+
+The kernel logs contain:
+
+....
+SELinux:  Initializing.
+....
+
+Inside the guest we now have:
+
+....
+getenforce
+....
+
+which initially says:
+
+....
+Disabled
+....
+
+TODO: if we try to enforce:
+
+....
+setenforce 1
+....
+
+it does not work and outputs:
+
+....
+setenforce: SELinux is disabled
+....
+
+SELinux requires glibc as mentioned at: xref:libc-choice[xrefstyle=full].
+
+=== User mode Linux
+
+I once got https://en.wikipedia.org/wiki/User-mode_Linux[UML] running on a minimal Buildroot setup at: https://unix.stackexchange.com/questions/73203/how-to-create-rootfs-for-user-mode-linux-on-fedora-18/372207#372207
+
+But in part because it is dying, I didn't spend much effort to integrate it into this repo, although it would be a good fit in principle, since it is essentially a virtualization method.
+
+Maybe some brave soul will send a pull request one day.
+
+=== UIO
+
+UIO is a kernel subsystem that allows to do certain types of driver operations from userland.
+
+This would be awesome to improve debuggability and safety of kernel modules.
+
+VFIO looks like a newer and better UIO replacement, but there do not exist any examples of how to use it: https://stackoverflow.com/questions/49309162/interfacing-with-qemu-edu-device-via-userspace-i-o-uio-linux-driver
+
+TODO get something interesting working. I currently don't understand the behaviour very well.
+
+TODO how to ACK interrupts? How to ensure that every interrupt gets handled separately?
+
+TODO how to write to registers. Currently using `/dev/mem` and `lspci`.
+
+This example should handle interrupts from userland and print a message to stdout:
+
+....
+./uio_read.sh
+....
+
+TODO: what is the expected behaviour? I should have documented this when I wrote this stuff, and I'm that lazy right now that I'm in the middle of a refactor :-)
+
+UIO interface in a nutshell:
+
+* blocking read / poll: waits until interrupts
+* `write`: call `irqcontrol` callback. Default: 0 or 1 to enable / disable interrupts.
+* `mmap`: access device memory
+
+Sources:
+
+* link:userland/kernel_modules/uio_read.c[]
+* link:rootfs_overlay/lkmc/uio_read.sh[]
+
+Bibliography:
+
+* https://stackoverflow.com/questions/15286772/userspace-vs-kernel-space-driver
+* https://01.org/linuxgraphics/gfx-docs/drm/driver-api/uio-howto.html
+* https://stackoverflow.com/questions/7986260/linux-interrupt-handling-in-user-space
+* https://yurovsky.github.io/2014/10/10/linux-uio-gpio-interrupt/
+* https://github.com/bmartini/zynq-axis/blob/65a3a448fda1f0ea4977adfba899eb487201853d/dev/axis.c
+* https://yurovsky.github.io/2014/10/10/linux-uio-gpio-interrupt/
+* http://nairobi-embedded.org/uio_example.html that website has QEMU examples for everything as usual. The example has a kernel-side which creates the memory mappings and is used by the user.
+* https://stackoverflow.com/questions/49309162/interfacing-with-qemu-edu-device-via-userspace-i-o-uio-linux-driver
+* userland driver stability questions:
+** https://stackoverflow.com/questions/8030758/getting-kernel-version-from-linux-kernel-module-at-runtime/45430233#45430233
+** https://stackoverflow.com/questions/37098482/how-to-build-a-linux-kernel-module-so-that-it-is-compatible-with-all-kernel-rele/45429681#45429681
+** https://liquidat.wordpress.com/2007/07/21/linux-kernel-2623-to-have-stable-userspace-driver-api/
+
+=== Linux kernel interactive stuff
+
+[[fbcon]]
+==== Linux kernel console fun
+
+Requires <<graphics>>.
+
+You can also try those on the `Ctrl-Alt-F3` of your Ubuntu host, but it is much more fun inside a VM!
+
+Stop the cursor from blinking:
+
+....
+echo 0 > /sys/class/graphics/fbcon/cursor_blink
+....
+
+Rotate the console 90 degrees! https://askubuntu.com/questions/237963/how-do-i-rotate-my-display-when-not-using-an-x-server
+
+....
+echo 1 > /sys/class/graphics/fbcon/rotate
+....
+
+Relies on: `CONFIG_FRAMEBUFFER_CONSOLE_ROTATION=y`.
+
+Documented under: `Documentation/fb/`.
+
+TODO: font and keymap. Mentioned at: https://cmcenroe.me/2017/05/05/linux-console.html and I think can be done with BusyBox `loadkmap` and `loadfont`, we just have to understand their formats, related:
+
+* https://unix.stackexchange.com/questions/177024/remap-keyboard-on-the-linux-console
+* https://superuser.com/questions/194202/remapping-keys-system-wide-in-linux-not-just-in-x
+
+==== Linux kernel magic keys
+
+Requires <<graphics>>.
+
+Let's have some fun.
+
+I think most are implemented under:
+
+....
+drivers/tty
+....
+
+TODO find all.
+
+Scroll up / down the terminal:
+
+....
+Shift-PgDown
+Shift-PgUp
+....
+
+Or inside `./qemu-monitor`:
+
+....
+sendkey shift-pgup
+sendkey shift-pgdown
+....
+
+===== Ctrl Alt Del
+
+If you run in <<qemu-graphic-mode>>:
+
+....
+./run --graphic
+....
+
+and then from the graphic window you enter the keys:
+
+....
+Ctrl-Alt-Del
+....
+
+then this runs the following command on the guest:
+
+....
+/sbin/reboot
+....
+
+This is enabled from our link:rootfs_overlay/etc/inittab[]:
+
+....
+::ctrlaltdel:/sbin/reboot
+....
+
+This leads Linux to try to reboot, and QEMU shutdowns due to the `-no-reboot` option which we set by default for, see: xref:exit-emulator-on-panic[xrefstyle=full].
+
+Here is a minimal example of Ctrl Alt Del:
+
+....
+./run --kernel-cli 'init=/lkmc/linux/ctrl_alt_del.out' --graphic
+....
+
+Source: link:userland/linux/ctrl_alt_del.c[]
+
+When you hit `Ctrl-Alt-Del` in the guest, our tiny init handles a `SIGINT` sent by the kernel and outputs to stdout:
+
+....
+cad
+....
+
+To map between `man 2 reboot` and the uClibc `RB_*` magic constants see:
+
+....
+less "$(./getvar buildroot_build_build_dir)"/uclibc-*/include/sys/reboot.h"
+....
+
+The procfs mechanism is documented at:
+
+....
+less linux/Documentation/sysctl/kernel.txt
+....
+
+which says:
+
+....
+When the value in this file is 0, ctrl-alt-del is trapped and
+sent to the init(1) program to handle a graceful restart.
+When, however, the value is > 0, Linux's reaction to a Vulcan
+Nerve Pinch (tm) will be an immediate reboot, without even
+syncing its dirty buffers.
+
+Note: when a program (like dosemu) has the keyboard in 'raw'
+mode, the ctrl-alt-del is intercepted by the program before it
+ever reaches the kernel tty layer, and it's up to the program
+to decide what to do with it.
+....
+
+Under the hood, behaviour is controlled by the `reboot` syscall:
+
+....
+man 2 reboot
+....
+
+`reboot` system calls can set either of the these behaviours for `Ctrl-Alt-Del`:
+
+* do a hard shutdown syscall. Set in uClibc C code with:
++
+....
+reboot(RB_ENABLE_CAD)
+....
++
+or from procfs with:
++
+....
+echo 1 > /proc/sys/kernel/ctrl-alt-del
+....
++
+Done by BusyBox' `reboot -f`.
+* send a SIGINT to the init process. This is what BusyBox' init does, and it then execs the string set in `inittab`.
++
+Set in uclibc C code with:
++
+....
+reboot(RB_DISABLE_CAD)
+....
++
+or from procfs with:
++
+....
+echo 0 > /proc/sys/kernel/ctrl-alt-del
+....
++
+Done by BusyBox' `reboot`.
+
+When a BusyBox init is with the signal, it prints the following lines:
+
+....
+The system is going down NOW!
+Sent SIGTERM to all processes
+Sent SIGKILL to all processes
+Requesting system reboot
+....
+
+On busybox-1.29.2's init at init/init.c we see how the kill signals are sent:
+
+....
+static void run_shutdown_and_kill_processes(void)
+{
+	/* Run everything to be run at "shutdown".  This is done _prior_
+	 * to killing everything, in case people wish to use scripts to
+	 * shut things down gracefully... */
+	run_actions(SHUTDOWN);
+
+	message(L_CONSOLE | L_LOG, "The system is going down NOW!");
+
+	/* Send signals to every process _except_ pid 1 */
+	kill(-1, SIGTERM);
+	message(L_CONSOLE, "Sent SIG%s to all processes", "TERM");
+	sync();
+	sleep(1);
+
+	kill(-1, SIGKILL);
+	message(L_CONSOLE, "Sent SIG%s to all processes", "KILL");
+	sync();
+	/*sleep(1); - callers take care about making a pause */
+}
+....
+
+and `run_shutdown_and_kill_processes` is called from:
+
+....
+/* The SIGPWR/SIGUSR[12]/SIGTERM handler */
+static void halt_reboot_pwoff(int sig) NORETURN;
+static void halt_reboot_pwoff(int sig)
+....
+
+which also prints the final line:
+
+....
+	message(L_CONSOLE, "Requesting system %s", m);
+....
+
+which is set as the signal handler via TODO.
+
+Bibliography:
+
+* https://superuser.com/questions/193652/does-linux-have-a-ctrlaltdel-equivalent/1324415#1324415
+* https://unix.stackexchange.com/questions/42573/meaning-and-commands-for-ctrlaltdel/444969#444969
+
+===== SysRq
+
+We cannot test these actual shortcuts on QEMU since the host captures them at a lower level, but from:
+
+....
+./qemu-monitor
+....
+
+we can for example crash the system with:
+
+....
+sendkey alt-sysrq-c
+....
+
+Same but boring because no magic key:
+
+....
+echo c > /proc/sysrq-trigger
+....
+
+Implemented in:
+
+....
+drivers/tty/sysrq.c
+....
+
+On your host, on modern systems that don't have the `SysRq` key you can do:
+
+....
+Alt-PrtSc-space
+....
+
+which prints a message to `dmesg` of type:
+
+....
+sysrq: SysRq : HELP : loglevel(0-9) reboot(b) crash(c) terminate-all-tasks(e) memory-full-oom-kill(f) kill-all-tasks(i) thaw-filesystems(j) sak(k) show-backtrace-all-active-cpus(l) show-memory-usage(m) nice-all-RT-tasks(n) poweroff(o) show-registers(p) show-all-timers(q) unraw(r) sync(s) show-task-states(t) unmount(u) show-blocked-tasks(w) dump-ftrace-buffer(z)
+....
+
+Individual SysRq can be enabled or disabled with the bitmask:
+
+....
+/proc/sys/kernel/sysrq
+....
+
+The bitmask is documented at:
+
+....
+less linux/Documentation/admin-guide/sysrq.rst
+....
+
+Bibliography: https://en.wikipedia.org/wiki/Magic_SysRq_key
+
+==== TTY
+
+In order to play with TTYs, do this:
+
+....
+printf '
+tty2::respawn:/sbin/getty -n -L -l /lkmc/loginroot.sh tty2 0 vt100
+tty3::respawn:-/bin/sh
+tty4::respawn:/sbin/getty 0 tty4
+tty63::respawn:-/bin/sh
+::respawn:/sbin/getty -L ttyS0 0 vt100
+::respawn:/sbin/getty -L ttyS1 0 vt100
+::respawn:/sbin/getty -L ttyS2 0 vt100
+# Leave one serial empty.
+#::respawn:/sbin/getty -L ttyS3 0 vt100
+' >> rootfs_overlay/etc/inittab
+./build-buildroot
+./run --graphic -- \
+  -serial telnet::1235,server,nowait \
+  -serial vc:800x600 \
+  -serial telnet::1236,server,nowait \
+;
+....
+
+and on a second shell:
+
+....
+telnet localhost 1235
+....
+
+We don't add more TTYs by default because it would spawn more processes, even if we use `askfirst` instead of `respawn`.
+
+On the GUI, switch TTYs with:
+
+* `Alt-Left` or `Alt-Right:` go to previous / next populated `/dev/ttyN` TTY. Skips over empty TTYs.
+* `Alt-Fn`: go to the nth TTY. If it is  not populated, don't go there.
+* `chvt <n>`: go to the n-th virtual TTY, even if it is empty: https://superuser.com/questions/33065/console-commands-to-change-virtual-ttys-in-linux-and-openbsd
+
+You can also test this on most hosts such as Ubuntu 18.04, except that when in the GUI, you must use `Ctrl-Alt-Fx` to switch to another terminal.
+
+Next, we also have the following shells running on the serial ports, hit enter to activate them:
+
+* `/dev/ttyS0`: first shell that was used to run QEMU, corresponds to QEMU's `-serial mon:stdio`.
++
+It would also work if we used `-serial stdio`, but:
++
+--
+** `Ctrl-C` would kill QEMU instead of going to the guest
+** `Ctrl-A C` wouldn't open the QEMU console there
+--
++
+see also: https://stackoverflow.com/questions/49716931/how-to-run-qemu-with-nographic-and-monitor-but-still-be-able-to-send-ctrlc-to
+* `/dev/ttyS1`: second shell running `telnet`
+* `/dev/ttyS2`: go on the GUI and enter `Ctrl-Alt-2`, corresponds to QEMU's `-serial vc`. Go back to the main console with `Ctrl-Alt-1`.
+
+although we cannot change between terminals from there.
+
+Each populated TTY contains a "shell":
+
+* `-/bin/sh`: goes directly into an `sh` without a login prompt.
++
+The trailing dash `-` can be used on any command. It makes the command that follows take over the TTY, which is what we typically want for interactive shells: https://askubuntu.com/questions/902998/how-to-check-which-tty-am-i-using
++
+The `getty` executable however also does this operation and therefore dispenses the `-`.
+* `/sbin/getty` asks for password, and then gives you an `sh`
++
+We can overcome the password prompt with the `-l /lkmc/loginroot.sh` technique explained at: https://askubuntu.com/questions/902998/how-to-check-which-tty-am-i-using but I don't see any advantage over `-/bin/sh` currently.
+
+Identify the current TTY with the command:
+
+....
+tty
+....
+
+Bibliography:
+
+* https://unix.stackexchange.com/questions/270272/how-to-get-the-tty-in-which-bash-is-running/270372
+* https://unix.stackexchange.com/questions/187319/how-to-get-the-real-name-of-the-controlling-terminal
+* https://unix.stackexchange.com/questions/77796/how-to-get-the-current-terminal-name
+* https://askubuntu.com/questions/902998/how-to-check-which-tty-am-i-using
+
+This outputs:
+
+* `/dev/console` for the initial GUI terminal. But I think it is the same as `/dev/tty1`, because if I try to do
++
+....
+tty1::respawn:-/bin/sh
+....
++
+it makes the terminal go crazy, as if multiple processes are randomly eating up the characters.
+* `/dev/ttyN` for the other graphic TTYs. Note that there are only 63 available ones, from `/dev/tty1` to `/dev/tty63` (`/dev/tty0` is the current one): https://superuser.com/questions/449781/why-is-there-so-many-linux-dev-tty[]. I think this is determined by:
++
+....
+#define MAX_NR_CONSOLES 63
+....
++
+in `linux/include/uapi/linux/vt.h`.
+* `/dev/ttySN` for the text shells.
++
+These are Serial ports, see this to understand what those represent physically: https://unix.stackexchange.com/questions/307390/what-is-the-difference-between-ttys0-ttyusb0-and-ttyama0-in-linux/367882#367882
++
+There are only 4 serial ports, I think this is determined by QEMU. TODO check.
++
+See also: https://stackoverflow.com/questions/16706423/two-instances-of-busybox-on-separate-serial-lines-ttysn
+
+Get the TTY in bulk for all processes:
+
+....
+./psa.sh
+....
+
+Source: link:rootfs_overlay/lkmc/psa.sh[].
+
+The TTY appears under the `TT` section, which is enabled by `-o tty`. This shows the TTY device number, e.g.:
+
+....
+4,1
+....
+
+and we can then confirm it with:
+
+....
+ls -l /dev/tty1
+....
+
+Next try:
+
+....
+insmod kthread.ko
+....
+
+and switch between virtual terminals, to understand that the dmesg goes to whatever current virtual terminal you are on, but not the others, and not to the serial terminals.
+
+Bibliography:
+
+* https://serverfault.com/questions/119736/how-to-enable-multiple-virtual-consoles-on-linux
+* https://github.com/mirror/busybox/blob/1_28_3/examples/inittab#L60
+* http://web.archive.org/web/20180117124612/http://nairobi-embedded.org/qemu_serial_port_system_console.html
+
+===== Start a getty from outside of init
+
+TODO: https://unix.stackexchange.com/questions/196704/getty-start-from-command-line
+
+TODO: how to place an `sh` directly on a TTY as well without `getty`?
+
+If I try the exact same command that the `inittab` is doing from a regular shell after boot:
+
+....
+/sbin/getty 0 tty1
+....
+
+it fails with:
+
+....
+getty: setsid: Operation not permitted
+....
+
+The following however works:
+
+....
+./run --eval 'getty 0 tty1 & getty 0 tty2 & getty 0 tty3 & sleep 99999999' --graphic
+....
+
+presumably because it is being called from `init` directly?
+
+Outcome: `Alt-Right` cycles between three TTYs, `tty1` being the default one that appears under the boot messages.
+
+`man 2 setsid` says that there is only one failure possibility:
+
+____
+EPERM  The process group ID of any process equals the PID of the calling process.  Thus, in particular, setsid() fails if the calling process is already a process group leader.
+____
+
+We can get some visibility into it to try and solve the problem with:
+
+....
+./psa.sh
+....
+
+===== console kernel boot parameter
+
+Take the command described at <<tty>> and try adding the following:
+
+* `-e 'console=tty7'`: boot messages still show on `/dev/tty1` (TODO how to change that?), but we don't get a shell at the end of boot there.
++
+Instead, the shell appears on `/dev/tty7`.
+* `-e 'console=tty2'` like `/dev/tty7`, but `/dev/tty2` is broken, because we have two shells there:
+** one due to the `::respawn:-/bin/sh` entry which uses whatever `console` points to
+** another one due to the `tty2::respawn:/sbin/getty` entry we added
+* `-e 'console=ttyS0'` much like `tty2`, but messages show only on serial, and the terminal is broken due to having multiple shells on it
+* `-e 'console=tty1 console=ttyS0'`: boot messages show on both `tty1` and `ttyS0`, but only `S0` gets a shell because it came last
+
+==== CONFIG_LOGO
+
+If you run in <<graphics>>, then you get a Penguin image for <<number-of-cores,every core>> above the console! https://askubuntu.com/questions/80938/is-it-possible-to-get-the-tux-logo-on-the-text-based-boot
+
+This is due to the https://github.com/torvalds/linux/blob/v4.17/drivers/video/logo/Kconfig#L5[`CONFIG_LOGO=y`] option which we enable by default.
+
+`reset` on the terminal then kills the poor penguins.
+
+When `CONFIG_LOGO=y` is set, the logo can be disabled at boot with:
+
+....
+./run --kernel-cli 'logo.nologo'
+....
+
+* https://stackoverflow.com/questions/39872463/how-can-i-disable-the-startup-penguins-and-boot-text-on-linaro-ubuntu
+* https://unix.stackexchange.com/questions/332198/centos-remove-penguin-logo-at-startup
+
+Looks like a recompile is needed to modify the image...
+
+* https://superuser.com/questions/736423/changing-kernel-bootsplash-image
+* https://unix.stackexchange.com/questions/153975/how-to-change-boot-logo-in-linux-mint
+
+=== DRM
+
+DRM / DRI is the new interface that supersedes `fbdev`:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_LIBDRM=y'
+./build-userland --package libdrm -- userland/libs/libdrm/modeset.c
+./run --eval-after './libs/libdrm/modeset.out' --graphic
+....
+
+Source: link:userland/libs/libdrm/modeset.c[]
+
+Outcome: for a few seconds, the screen that contains the terminal gets taken over by changing colors of the rainbow.
+
+TODO not working for `aarch64`, it takes over the screen for a few seconds and the kernel messages disappear, but the screen stays black all the time.
+
+....
+./build-buildroot --config 'BR2_PACKAGE_LIBDRM=y'
+./build-userland --package libdrm
+./build-buildroot
+./run --eval-after './libs/libdrm/modeset.out' --graphic
+....
+
+<<kmscube>> however worked, which means that it must be a bug with this demo?
+
+We set `CONFIG_DRM=y` on our default kernel configuration, and it creates one device file for each display:
+
+....
+# ls -l /dev/dri
+total 0
+crw-------    1 root     root      226,   0 May 28 09:41 card0
+# grep 226 /proc/devices
+226 drm
+# ls /sys/module/drm /sys/module/drm_kms_helper/
+....
+
+Try creating new displays:
+
+....
+./run --arch aarch64 --graphic -- -device virtio-gpu-pci
+....
+
+to see multiple `/dev/dri/cardN`, and then use a different display with:
+
+....
+./run --eval-after './libs/libdrm/modeset.out' --graphic
+....
+
+Bibliography:
+
+* https://dri.freedesktop.org/wiki/DRM/
+* https://en.wikipedia.org/wiki/Direct_Rendering_Infrastructure
+* https://en.wikipedia.org/wiki/Direct_Rendering_Manager
+* https://en.wikipedia.org/wiki/Mode_setting KMS
+
+Tested on: https://github.com/cirosantilli/linux-kernel-module-cheat/commit/93e383902ebcc03d8a7ac0d65961c0e62af9612b[93e383902ebcc03d8a7ac0d65961c0e62af9612b]
+
+==== kmscube
+
+....
+./build-buildroot --config-fragment buildroot_config/kmscube
+....
+
+Outcome: a colored spinning cube coded in OpenGL + EGL takes over your display and spins forever: https://www.youtube.com/watch?v=CqgJMgfxjsk
+
+It is a bit amusing to see OpenGL running outside of a window manager window like that: https://stackoverflow.com/questions/3804065/using-opengl-without-a-window-manager-in-linux/50669152#50669152
+
+TODO: it is very slow, about 1FPS. I tried Buildroot master ad684c20d146b220dd04a85dbf2533c69ec8ee52 with:
+
+....
+make qemu_x86_64_defconfig
+printf "
+BR2_CCACHE=y
+BR2_PACKAGE_HOST_QEMU=y
+BR2_PACKAGE_HOST_QEMU_LINUX_USER_MODE=n
+BR2_PACKAGE_HOST_QEMU_SYSTEM_MODE=y
+BR2_PACKAGE_HOST_QEMU_VDE2=y
+BR2_PACKAGE_KMSCUBE=y
+BR2_PACKAGE_MESA3D=y
+BR2_PACKAGE_MESA3D_DRI_DRIVER_SWRAST=y
+BR2_PACKAGE_MESA3D_OPENGL_EGL=y
+BR2_PACKAGE_MESA3D_OPENGL_ES=y
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+" >> .config
+....
+
+and the FPS was much better, I estimate something like 15FPS.
+
+On Ubuntu 18.04 with NVIDIA proprietary drivers:
+
+....
+sudo apt-get instll kmscube
+kmscube
+....
+
+fails with:
+
+....
+drmModeGetResources failed: Invalid argument
+failed to initialize legacy DRM
+....
+
+See also: https://github.com/robclark/kmscube/issues/12 and https://stackoverflow.com/questions/26920835/can-egl-application-run-in-console-mode/26921287#26921287
+
+Tested on: https://github.com/cirosantilli/linux-kernel-module-cheat/commit/2903771275372ccfecc2b025edbb0d04c4016930[2903771275372ccfecc2b025edbb0d04c4016930]
+
+==== kmscon
+
+TODO get working.
+
+Implements a console for <<drm>>.
+
+The Linux kernel has a built-in fbdev console called <<fbcon>> but not for <<drm>> it seems.
+
+The upstream project seems dead with last commit in 2014: https://www.freedesktop.org/wiki/Software/kmscon/
+
+Build failed in Ubuntu 18.04 with: https://github.com/dvdhrm/kmscon/issues/131 but this fork compiled but didn't run on host: https://github.com/Aetf/kmscon/issues/2#issuecomment-392484043
+
+Haven't tested the fork on QEMU too much insanity.
+
+==== libdri2
+
+TODO get working.
+
+Looks like a more raw alternative to libdrm:
+
+....
+./build-buildroot --config 'BR2_PACKABE_LIBDRI2=y'
+wget \
+  -O "$(./getvar userland_source_dir)/dri2test.c" \
+  https://raw.githubusercontent.com/robclark/libdri2/master/test/dri2test.c \
+;
+./build-userland
+....
+
+but then I noticed that that example requires multiple files, and I don't feel like integrating it into our build.
+
+When I build it on Ubuntu 18.04 host, it does not generate any executable, so I'm confused.
+
+=== Linux kernel testing
+
+Bibliography: https://stackoverflow.com/questions/3177338/how-is-the-linux-kernel-tested
+
+==== Linux Test Project
+
+https://github.com/linux-test-project/ltp
+
+Tests a lot of Linux and POSIX userland visible interfaces.
+
+Buildroot already has a package, so it is trivial to build it:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_LTP_TESTSUITE=y'
+....
+
+So now let's try and see if the `exit` system call is working:
+
+....
+/usr/lib/ltp-testsuite/testcases/bin/exit01
+....
+
+which gives successful output:
+
+....
+exit01      1  TPASS  :  exit() test PASSED
+....
+
+and has source code at: https://github.com/linux-test-project/ltp/blob/20190115/testcases/kernel/syscalls/exit/exit01.c
+
+Besides testing any kernel modifications you make, LTP can also be used to the system call implementation of <<user-mode-simulation>> as shown at <<user-mode-buildroot-executables>>:
+
+....
+./run --userland "$(./getvar buildroot_target_dir)/usr/lib/ltp-testsuite/testcases/bin/exit01"
+....
+
+Tested at: 287c83f3f99db8c1ff9bbc85a79576da6a78e986 + 1.
+
+==== stress
+
+<<posix>> userland stress. Two versions:
+
+....
+./build-buildroot \
+  --config 'BR2_PACKAGE_STRESS=y' \
+  --config 'BR2_PACKAGE_STRESS_NG=y' \
+;
+....
+
+`STRESS_NG` is likely the best, but it requires glibc, see: xref:libc-choice[xrefstyle=full].
+
+Websites:
+
+* https://people.seas.harvard.edu/~apw/stress/
+* https://github.com/ColinIanKing/stress-ng
+
+`stress` usage:
+
+....
+stress --help
+stress -c 16 &
+ps
+....
+
+and notice how 16 threads were created in addition to a parent worker thread.
+
+It just runs forever, so kill it when you get tired:
+
+....
+kill %1
+....
+
+`stress -c 1 -t 1` makes gem5 irresponsive for a very long time.
+
+=== Linux kernel build system
+
+==== vmlinux vs bzImage vs zImage vs Image
+
+Between all archs on QEMU and gem5 we touch all of those kernel built output files.
+
+We are trying to maintain a description of each at: https://unix.stackexchange.com/questions/5518/what-is-the-difference-between-the-following-kernel-makefile-terms-vmlinux-vml/482978#482978
+
+QEMU does not seem able to boot ELF files like `vmlinux`: https://superuser.com/questions/1376944/can-qemu-boot-linux-from-vmlinux-instead-of-bzimage
+
+Converting `arch/*` images to `vmlinux` is possible in theory x86 with https://github.com/torvalds/linux/blob/v5.1/scripts/extract-vmlinux[`extract-vmlinux`] but we didn't get any gem5 boots working from images generated like that for some reason, see: https://github.com/cirosantilli/linux-kernel-module-cheat/issues/79
+

@@ -1,0 +1,185 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Device tree
+
+The device tree is a Linux kernel defined data structure that serves to inform the kernel how the hardware is setup.
+
+<<platform_device>> contains a minimal runnable example of device tree manipulation.
+
+Device trees serve to reduce the need for hardware vendors to patch the kernel: they just provide a device tree file instead, which is much simpler.
+
+x86 does not use it device trees, but many other archs to, notably ARM.
+
+This is notably because ARM boards:
+
+* typically don't have discoverable hardware extensions like PCI, but rather just put everything on an SoC with magic register addresses
+* are made by a wide variety of vendors due to ARM's licensing business model, which increases variability
+
+The Linux kernel itself has several device trees under `./arch/<arch>/boot/dts`, see also: https://stackoverflow.com/questions/21670967/how-to-compile-dts-linux-device-tree-source-files-to-dtb/42839737#42839737
+
+=== DTB files
+
+Files that contain device trees have the `.dtb` extension when compiled, and `.dts` when in text form.
+
+You can convert between those formats with:
+
+....
+"$(./getvar buildroot_host_dir)"/bin/dtc -I dtb -O dts -o a.dts a.dtb
+"$(./getvar buildroot_host_dir)"/bin/dtc -I dts -O dtb -o a.dtb a.dts
+....
+
+Buildroot builds the tool due to `BR2_PACKAGE_HOST_DTC=y`.
+
+On Ubuntu 18.04, the package is named:
+
+....
+sudo apt-get install device-tree-compiler
+....
+
+See also: https://stackoverflow.com/questions/14000736/tool-to-visualize-the-device-tree-file-dtb-used-by-the-linux-kernel/39931834#39931834
+
+Device tree files are provided to the emulator just like the root filesystem and the Linux kernel image.
+
+In real hardware, those components are also often provided separately. For example, on the Raspberry Pi 2, the SD card must contain two partitions:
+
+* the first contains all magic files, including the Linux kernel and the device tree
+* the second contains the root filesystem
+
+See also: https://stackoverflow.com/questions/29837892/how-to-run-a-c-program-with-no-os-on-the-raspberry-pi/40063032#40063032
+
+=== Device tree syntax
+
+Good format descriptions:
+
+* https://www.raspberrypi.org/documentation/configuration/device-tree.md
+
+Minimal example
+
+....
+/dts-v1/;
+
+/ {
+    a;
+};
+....
+
+Check correctness with:
+
+....
+dtc a.dts
+....
+
+Separate nodes are simply merged by node path, e.g.:
+
+....
+/dts-v1/;
+
+/ {
+    a;
+};
+
+/ {
+    b;
+};
+....
+
+then `dtc a.dts` gives:
+
+....
+/dts-v1/;
+
+/ {
+        a;
+        b;
+};
+....
+
+=== Get device tree from a running kernel
+
+https://unix.stackexchange.com/questions/265890/is-it-possible-to-get-the-information-for-a-device-tree-using-sys-of-a-running/330926#330926
+
+This is specially interesting because QEMU and gem5 are capable of generating DTBs that match the selected machine depending on dynamic command line parameters for some types of machines.
+
+So observing the device tree from the guest allows to easily see what the emulator has generated.
+
+Compile the `dtc` tool into the root filesystem:
+
+....
+./build-buildroot \
+  --arch aarch64 \
+  --config 'BR2_PACKAGE_DTC=y' \
+  --config 'BR2_PACKAGE_DTC_PROGRAMS=y' \
+;
+....
+
+`-M virt` for example, which we use by default for `aarch64`, boots just fine without the `-dtb` option:
+
+....
+./run --arch aarch64
+....
+
+Then, from inside the guest:
+
+....
+dtc -I fs -O dts /sys/firmware/devicetree/base
+....
+
+contains:
+
+....
+        cpus {
+                #address-cells = <0x1>;
+                #size-cells = <0x0>;
+
+                cpu@0 {
+                        compatible = "arm,cortex-a57";
+                        device_type = "cpu";
+                        reg = <0x0>;
+                };
+        };
+....
+
+=== Device tree emulator generation
+
+Since emulators know everything about the hardware, they can automatically generate device trees for us, which is very convenient.
+
+This is the case for both QEMU and gem5.
+
+For example, if we increase the <<number-of-cores,number of cores>> to 2:
+
+....
+./run --arch aarch64 --cpus 2
+....
+
+QEMU automatically adds a second CPU to the DTB!
+
+....
+                cpu@0 {
+                cpu@1 {
+....
+
+The action seems to be happening at: `hw/arm/virt.c`.
+
+You can dump the DTB QEMU generated with:
+
+....
+./run --arch aarch64 -- -machine dumpdtb=dtb.dtb
+....
+
+as mentioned at: https://lists.gnu.org/archive/html/qemu-discuss/2017-02/msg00051.html
+
+<<gem5-fs_biglittle>> 2a9573f5942b5416fb0570cf5cb6cdecba733392 can also generate its own DTB.
+
+gem5 can generate DTBs on ARM with `--generate-dtb`. The generated DTB is placed in the <<m5out-directory>> named as `system.dtb`.
+

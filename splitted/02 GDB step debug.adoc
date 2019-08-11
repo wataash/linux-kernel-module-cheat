@@ -1,0 +1,1048 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== GDB step debug
+
+=== GDB step debug kernel boot
+
+`--gdb-wait` makes QEMU and gem5 wait for a GDB connection, otherwise we could accidentally go past the point we want to break at:
+
+....
+./run --gdb-wait
+....
+
+Say you want to break at `start_kernel`. So on another shell:
+
+....
+./run-gdb start_kernel
+....
+
+or at a given line:
+
+....
+./run-gdb init/main.c:1088
+....
+
+Now QEMU will stop there, and you can use the normal GDB commands:
+
+....
+list
+next
+continue
+....
+
+See also:
+
+* https://stackoverflow.com/questions/11408041/how-to-debug-the-linux-kernel-with-gdb-and-qemu/33203642#33203642
+* https://stackoverflow.com/questions/4943857/linux-kernel-live-debugging-how-its-done-and-what-tools-are-used/42316607#42316607
+
+==== GDB step debug kernel boot other archs
+
+Just don't forget to pass `--arch` to `./run-gdb`, e.g.:
+
+....
+./run --arch aarch64 --gdb-wait
+....
+
+and:
+
+....
+./run-gdb --arch aarch64 start_kernel
+....
+
+[[kernel-o0]]
+==== Disable kernel compiler optimizations
+
+https://stackoverflow.com/questions/29151235/how-to-de-optimize-the-linux-kernel-to-and-compile-it-with-o0
+
+`O=0` is an impossible dream, `O=2` being the default.
+
+So get ready for some weird jumps, and `<value optimized out>` fun. Why, Linux, why.
+
+=== GDB step debug kernel post-boot
+
+Let's observe the kernel `write` system call as it reacts to some userland actions.
+
+Start QEMU with just:
+
+....
+./run
+....
+
+and after boot inside a shell run:
+
+....
+./count.sh
+....
+
+which counts to infinity to stdout. Source: link:rootfs_overlay/lkmc/count.sh[].
+
+Then in another shell, run:
+
+....
+./run-gdb
+....
+
+and then hit:
+
+....
+Ctrl-C
+break __x64_sys_write
+continue
+continue
+continue
+....
+
+And you now control the counting on the first shell from GDB!
+
+Before v4.17, the symbol name was just `sys_write`, the change happened at https://github.com/torvalds/linux/commit/d5a00528b58cdb2c71206e18bd021e34c4eab878[d5a00528b58cdb2c71206e18bd021e34c4eab878]. As of Linux v 4.19, the function is called `sys_write` in `arm`, and `__arm64_sys_write` in `aarch64`. One good way to find it if the name changes again is to try:
+
+....
+rbreak .*sys_write
+....
+
+or just have a quick look at the sources!
+
+When you hit `Ctrl-C`, if we happen to be inside kernel code at that point, which is very likely if there are no heavy background tasks waiting, and we are just waiting on a `sleep` type system call of the command prompt, we can already see the source for the random place inside the kernel where we stopped.
+
+=== tmux
+
+tmux just makes things even more fun by allowing us to see both the terminal for:
+
+* emulator stdout
+* <<gdb>>
+
+at once without dragging windows around!
+
+First start `tmux` with:
+
+....
+tmux
+....
+
+Now that you are inside a shell inside tmux, you can start GDB simply with:
+
+....
+./run --gdb
+....
+
+which is just a convenient shortcut for:
+
+....
+./run --gdb-wait --tmux --tmux-args start_kernel
+....
+
+This splits the terminal into two panes:
+
+* left: usual QEMU with terminal
+* right: GDB
+
+and focuses on the GDB pane.
+
+Now you can navigate with the usual tmux shortcuts:
+
+* switch between the two panes with: `Ctrl-B O`
+* close either pane by killing its terminal with `Ctrl-D` as usual
+
+See the tmux manual for further details:
+
+....
+man tmux
+....
+
+To start again, switch back to the QEMU pane with `Ctrl-O`, kill the emulator, and re-run:
+
+....
+./run --gdb
+....
+
+This automatically clears the GDB pane, and starts a new one.
+
+The option `--tmux-args` determines which options will be passed to the program running on the second tmux pane, and is equivalent to:
+
+This is equivalent to:
+
+....
+./run --gdb-wait
+./run-gdb start_kernel
+....
+
+Due to Python's CLI parsing quicks, if the link:run-gdb[] arguments start with a dash `-`, you have to use the `=` sign, e.g. to <<gdb-step-debug-early-boot>>:
+
+....
+./run --gdb --tmux-args=--no-continue
+....
+
+Bibliography: https://unix.stackexchange.com/questions/152738/how-to-split-a-new-window-and-run-a-command-in-this-new-window-using-tmux/432111#432111
+
+==== tmux gem5
+
+If you are using gem5 instead of QEMU, `--tmux` has a different effect by default: it opens the gem5 terminal instead of the debugger:
+
+....
+./run --emulator gem5 --tmux
+....
+
+To open a new pane with GDB instead of the terminal, use:
+
+....
+./run --gdb
+....
+
+which is equivalent to:
+
+....
+./run --emulator gem5 --gdb-wait --tmux --tmux-args start_kernel --tmux-program gdb
+....
+
+`--tmux-program` implies `--tmux`, so we can just write:
+
+....
+./run --emulator gem5 --gdb-wait --tmux-program gdb
+....
+
+If you also want to see both GDB and the terminal with gem5, then you will need to open a separate shell manually as usual with `./gem5-shell`.
+
+From inside tmux, you can create new terminals on a new window with `Ctrl-B C` split a pane yet again vertically with `Ctrl-B %` or horizontally with `Ctrl-B "`.
+
+=== GDB step debug kernel module
+
+https://stackoverflow.com/questions/28607538/how-to-debug-linux-kernel-modules-with-qemu/44095831#44095831
+
+Loadable kernel modules are a bit trickier since the kernel can place them at different memory locations depending on load order.
+
+So we cannot set the breakpoints before `insmod`.
+
+However, the Linux kernel GDB scripts offer the `lx-symbols` command, which takes care of that beautifully for us.
+
+Shell 1:
+
+....
+./run
+....
+
+Wait for the boot to end and run:
+
+....
+insmod timer.ko
+....
+
+Source: link:kernel_modules/timer.c[].
+
+This prints a message to dmesg every second.
+
+Shell 2:
+
+....
+./run-gdb
+....
+
+In GDB, hit `Ctrl-C`, and note how it says:
+
+....
+scanning for modules in /root/linux-kernel-module-cheat/out/kernel_modules/x86_64/kernel_modules
+loading @0xffffffffc0000000: /root/linux-kernel-module-cheat/out/kernel_modules/x86_64/kernel_modules/timer.ko
+....
+
+That's `lx-symbols` working! Now simply:
+
+....
+break lkmc_timer_callback
+continue
+continue
+continue
+....
+
+and we now control the callback from GDB!
+
+Just don't forget to remove your breakpoints after `rmmod`, or they will point to stale memory locations.
+
+TODO: why does `break work_func` for `insmod kthread.ko` not very well? Sometimes it breaks but not others.
+
+[[gdb-step-debug-kernel-module-arm]]
+==== GDB step debug kernel module insmodded by init on ARM
+
+TODO on `arm` 51e31cdc2933a774c2a0dc62664ad8acec1d2dbe it does not always work, and `lx-symbols` fails with the message:
+
+....
+loading vmlinux
+Traceback (most recent call last):
+  File "/linux-kernel-module-cheat//out/arm/buildroot/build/linux-custom/scripts/gdb/linux/symbols.py", line 163, in invoke
+    self.load_all_symbols()
+  File "/linux-kernel-module-cheat//out/arm/buildroot/build/linux-custom/scripts/gdb/linux/symbols.py", line 150, in load_all_symbols
+    [self.load_module_symbols(module) for module in module_list]
+  File "/linux-kernel-module-cheat//out/arm/buildroot/build/linux-custom/scripts/gdb/linux/symbols.py", line 110, in load_module_symbols
+    module_name = module['name'].string()
+gdb.MemoryError: Cannot access memory at address 0xbf0000cc
+Error occurred in Python command: Cannot access memory at address 0xbf0000cc
+....
+
+Can't reproduce on `x86_64` and `aarch64` are fine.
+
+It is kind of random: if you just `insmod` manually and then immediately `./run-gdb --arch arm`, then it usually works.
+
+But this fails most of the time: shell 1:
+
+....
+./run --arch arm --eval-after 'insmod hello.ko'
+....
+
+shell 2:
+
+....
+./run-gdb --arch arm
+....
+
+then hit `Ctrl-C` on shell 2, and voila.
+
+Then:
+
+....
+cat /proc/modules
+....
+
+says that the load address is:
+
+....
+0xbf000000
+....
+
+so it is close to the failing `0xbf0000cc`.
+
+`readelf`:
+
+....
+./run-toolchain readelf -- -s "$(./getvar kernel_modules_build_subdir)/hello.ko"
+....
+
+does not give any interesting hits at `cc`, no symbol was placed that far.
+
+==== GDB module_init
+
+TODO find a more convenient method. We have working methods, but they are not ideal.
+
+This is not very easy, since by the time the module finishes loading, and `lx-symbols` can work properly, `module_init` has already finished running!
+
+Possibly asked at:
+
+* https://stackoverflow.com/questions/37059320/debug-a-kernel-module-being-loaded
+* https://stackoverflow.com/questions/11888412/debug-the-init-module-call-of-a-linux-kernel-module
+
+===== GDB module_init step into it
+
+This is the best method we've found so far.
+
+The kernel calls `module_init` synchronously, therefore it is not hard to step into that call.
+
+As of 4.16, the call happens in `do_one_initcall`, so we can do in shell 1:
+
+....
+./run
+....
+
+shell 2 after boot finishes (because there are other calls to `do_init_module` at boot, presumably for the built-in modules):
+
+....
+./run-gdb do_one_initcall
+....
+
+then step until the line:
+
+....
+833         ret = fn();
+....
+
+which does the actual call, and then step into it.
+
+For the next time, you can also put a breakpoint there directly:
+
+....
+./run-gdb init/main.c:833
+....
+
+How we found this out: first we got <<gdb-module_init-calculate-entry-address>> working, and then we did a `bt`. AKA cheating :-)
+
+===== GDB module_init calculate entry address
+
+This works, but is a bit annoying.
+
+The key observation is that the load address of kernel modules is deterministic: there is a pre allocated memory region https://www.kernel.org/doc/Documentation/x86/x86_64/mm.txt "module mapping space" filled from bottom up.
+
+So once we find the address the first time, we can just reuse it afterwards, as long as we don't modify the module.
+
+Do a fresh boot and get the module:
+
+....
+./run --eval-after './pr_debug.sh;insmod fops.ko;./linux/poweroff.out'
+....
+
+The boot must be fresh, because the load address changes every time we insert, even after removing previous modules.
+
+The base address shows on terminal:
+
+....
+0xffffffffc0000000 .text
+....
+
+Now let's find the offset of `myinit`:
+
+....
+./run-toolchain readelf -- \
+  -s "$(./getvar kernel_modules_build_subdir)/fops.ko" | \
+  grep myinit
+....
+
+which gives:
+
+....
+    30: 0000000000000240    43 FUNC    LOCAL  DEFAULT    2 myinit
+....
+
+so the offset address is `0x240` and we deduce that the function will be placed at:
+
+....
+0xffffffffc0000000 + 0x240 = 0xffffffffc0000240
+....
+
+Now we can just do a fresh boot on shell 1:
+
+....
+./run --eval 'insmod fops.ko;./linux/poweroff.out' --gdb-wait
+....
+
+and on shell 2:
+
+....
+./run-gdb '*0xffffffffc0000240'
+....
+
+GDB then breaks, and `lx-symbols` works.
+
+===== GDB module_init break at the end of sys_init_module
+
+TODO not working. This could be potentially very convenient.
+
+The idea here is to break at a point late enough inside `sys_init_module`, at which point `lx-symbols` can be called and do its magic.
+
+Beware that there are both `sys_init_module` and `sys_finit_module` syscalls, and `insmod` uses `fmodule_init` by default.
+
+Both call `do_module_init` however, which is what `lx-symbols` hooks to.
+
+If we try:
+
+....
+b sys_finit_module
+....
+
+then hitting:
+
+....
+n
+....
+
+does not break, and insertion happens, likely because of optimizations? <<kernel-o0>>
+
+Then we try:
+
+....
+b do_init_module
+....
+
+A naive:
+
+....
+fin
+....
+
+also fails to break!
+
+Finally, in despair we notice that <<pr_debug>> prints the kernel load address as explained at <<bypass-lx-symbols>>.
+
+So, if we set a breakpoint just after that message is printed by searching where that happens on the Linux source code, we must be able to get the correct load address before `init_module` happens.
+
+===== GDB module_init add trap instruction
+
+This is another possibility: we could modify the module source by adding a trap instruction of some kind.
+
+This appears to be described at: https://www.linuxjournal.com/article/4525
+
+But it refers to a `gdbstart` script which is not in the tree anymore and beyond my `git log` capabilities.
+
+And just adding:
+
+....
+asm( " int $3");
+....
+
+directly gives an <<oops,oops>> as I'd expect.
+
+==== Bypass lx-symbols
+
+Useless, but a good way to show how hardcore you are. Disable `lx-symbols` with:
+
+....
+./run-gdb --no-lxsymbols
+....
+
+From inside guest:
+
+....
+insmod timer.ko
+cat /proc/modules
+....
+
+as mentioned at:
+
+* https://stackoverflow.com/questions/6384605/how-to-get-address-of-a-kernel-module-loaded-using-insmod/6385818
+* https://unix.stackexchange.com/questions/194405/get-base-address-and-size-of-a-loaded-kernel-module
+
+This will give a line of form:
+
+....
+fops 2327 0 - Live 0xfffffffa00000000
+....
+
+And then tell GDB where the module was loaded with:
+
+....
+Ctrl-C
+add-symbol-file ../../../rootfs_overlay/x86_64/timer.ko 0xffffffffc0000000
+0xffffffffc0000000
+....
+
+Alternatively, if the module panics before you can read `/proc/modules`, there is a <<pr_debug>> which shows the load address:
+
+....
+echo 8 > /proc/sys/kernel/printk
+echo 'file kernel/module.c +p' > /sys/kernel/debug/dynamic_debug/control
+./linux/myinsmod.out hello.ko
+....
+
+And then search for a line of type:
+
+....
+[   84.877482]  0xfffffffa00000000 .text
+....
+
+Tested on 4f4749148273c282e80b58c59db1b47049e190bf + 1.
+
+=== GDB step debug early boot
+
+TODO successfully debug the very first instruction that the Linux kernel runs, before `start_kernel`!
+
+Break at the very first instruction executed by QEMU:
+
+....
+./run-gdb --no-continue
+....
+
+TODO why can't we break at early startup stuff such as:
+
+....
+./run-gdb extract_kernel
+./run-gdb main
+....
+
+Maybe it is because they are being copied around at specific locations instead of being run directly from inside the main image, which is where the debug information points to?
+
+See also: https://stackoverflow.com/questions/2589845/what-are-the-first-operations-that-the-linux-kernel-executes-on-boot
+
+<<gem5-tracing>> with `--debug-flags=Exec` does show the right symbols however! So in the worst case, we can just read their source. Amazing.
+
+v4.19 also added a `CONFIG_HAVE_KERNEL_UNCOMPRESSED=y` option for having the kernel uncompressed which could make following the startup easier, but it is only available on s390. `aarch64` however is already uncompressed by default, so might be the easiest one. See also: xref:vmlinux-vs-bzimage-vs-zimage-vs-image[xrefstyle=full].
+
+==== GDB step debug early boot by address
+
+One possibility is to run:
+
+....
+./trace-boot --arch arm
+....
+
+and then find the second address (the first one does not work, already too late maybe):
+
+....
+less "$(./getvar --arch arm trace_txt_file)"
+....
+
+and break there:
+
+....
+./run --arch arm --gdb-wait
+./run-gdb --arch arm '*0x1000'
+....
+
+but TODO: it does not show the source assembly under `arch/arm`: https://stackoverflow.com/questions/11423784/qemu-arm-linux-kernel-boot-debug-no-source-code
+
+I also tried to hack `run-gdb` with:
+
+....
+@@ -81,7 +81,7 @@ else
+ ${gdb} \
+ -q \\
+ -ex 'add-auto-load-safe-path $(pwd)' \\
+--ex 'file vmlinux' \\
++-ex 'file arch/arm/boot/compressed/vmlinux' \\
+ -ex 'target remote localhost:${port}' \\
+ ${brk} \
+ -ex 'continue' \\
+....
+
+and no I do have the symbols from `arch/arm/boot/compressed/vmlinux'`, but the breaks still don't work.
+
+=== GDB step debug userland processes
+
+QEMU's `-gdb` GDB breakpoints are set on virtual addresses, so you can in theory debug userland processes as well.
+
+* https://stackoverflow.com/questions/26271901/is-it-possible-to-use-gdb-and-qemu-to-debug-linux-user-space-programs-and-kernel
+* https://stackoverflow.com/questions/16273614/debug-init-on-qemu-using-gdb
+
+You will generally want to use <<gdbserver>> for this as it is more reliable, but this method can overcome the following limitations of `gdbserver`:
+
+* the emulator does not support host to guest networking. This seems to be the case for gem5 as explained at: xref:gem5-host-to-guest-networking[xrefstyle=full]
+* cannot see the start of the `init` process easily
+* `gdbserver` alters the working of the kernel, and makes your run less representative
+
+Known limitations of direct userland debugging:
+
+* the kernel might switch context to another process or to the kernel itself e.g. on a system call, and then TODO confirm the PIC would go to weird places and source code would be missing.
++
+Solutions to this are being researched at: xref:lx-ps[xrefstyle=full].
+* TODO step into shared libraries. If I attempt to load them explicitly:
++
+....
+(gdb) sharedlibrary ../../staging/lib/libc.so.0
+No loaded shared libraries match the pattern `../../staging/lib/libc.so.0'.
+....
++
+since GDB does not know that libc is loaded.
+
+==== GDB step debug userland custom init
+
+This is the userland debug setup most likely to work, since at init time there is only one userland executable running.
+
+For executables from the link:userland/[] directory such as link:userland/posix/count.c[]:
+
+* Shell 1:
++
+....
+./run --gdb-wait --kernel-cli 'init=/lkmc/posix/count.out'
+....
+* Shell 2:
++
+....
+./run-gdb --userland userland/posix/count.c main
+....
++
+Alternatively, we could also pass the full path to the executable:
++
+....
+./run-gdb --userland "$(./getvar userland_build_dir)/posix/count.out" main
+....
++
+Path resolution is analogous to <<baremetal-setup-getting-started,that of `./run --baremetal`>>.
+
+Then, as soon as boot ends, we are left inside a debug session that looks just like what `gdbserver` would produce.
+
+==== GDB step debug userland BusyBox init
+
+BusyBox custom init process:
+
+* Shell 1:
++
+....
+./run --gdb-wait --kernel-cli 'init=/bin/ls'
+....
+* Shell 2:
++
+....
+./run-gdb --userland "$(./getvar buildroot_build_build_dir)"/busybox-*/busybox ls_main
+....
+
+This follows BusyBox' convention of calling the main for each executable as `<exec>_main` since the `busybox` executable has many "mains".
+
+BusyBox default init process:
+
+* Shell 1:
++
+....
+./run --gdb-wait
+....
+* Shell 2:
++
+....
+./run-gdb --userland "$(./getvar buildroot_build_build_dir)"/busybox-*/busybox init_main
+....
+
+`init` cannot be debugged with <<gdbserver>> without modifying the source, or else `/sbin/init` exits early with:
+
+....
+"must be run as PID 1"
+....
+
+==== GDB step debug userland non-init
+
+Non-init process:
+
+* Shell 1:
++
+....
+./run --gdb-wait
+....
+* Shell 2:
++
+....
+./run-gdb --userland userland/linux/rand_check.c main
+....
+* Shell 1 after the boot finishes:
++
+....
+./linux/rand_check.out
+....
+
+This is the least reliable setup as there might be other processes that use the given virtual address.
+
+[[gdb-step-debug-userland-non-init-without-gdb-wait]]
+===== GDB step debug userland non-init without --gdb-wait
+
+TODO: if I try <<gdb-step-debug-userland-non-init>> without `--gdb-wait` and the `break main` that we do inside `./run-gdb` says:
+
+....
+Cannot access memory at address 0x10604
+....
+
+and then GDB never breaks. Tested at ac8663a44a450c3eadafe14031186813f90c21e4 + 1.
+
+The exact behaviour seems to depend on the architecture:
+
+* `arm`: happens always
+* `x86_64`: appears to happen only if you try to connect GDB as fast as possible, before init has been reached.
+* `aarch64`: could not observe the problem
+
+We have also double checked the address with:
+
+....
+./run-toolchain --arch arm readelf -- \
+  -s "$(./getvar --arch arm userland_build_dir)/linux/myinsmod.out" | \
+  grep main
+....
+
+and from GDB:
+
+....
+info line main
+....
+
+and both give:
+
+....
+000105fc
+....
+
+which is just 8 bytes before `0x10604`.
+
+`gdbserver` also says `0x10604`.
+
+However, if do a `Ctrl-C` in GDB, and then a direct:
+
+....
+b *0x000105fc
+....
+
+it works. Why?!
+
+On GEM5, x86 can also give the `Cannot access memory at address`, so maybe it is also unreliable on QEMU, and works just by coincidence.
+
+=== GDB call
+
+GDB can call functions as explained at: https://stackoverflow.com/questions/1354731/how-to-evaluate-functions-in-gdb
+
+However this is failing for us:
+
+* some symbols are not visible to `call` even though `b` sees them
+* for those that are, `call` fails with an E14 error
+
+E.g.: if we break on `__x64_sys_write` on `count.sh`:
+
+....
+>>> call printk(0, "asdf")
+Could not fetch register "orig_rax"; remote failure reply 'E14'
+>>> b printk
+Breakpoint 2 at 0xffffffff81091bca: file kernel/printk/printk.c, line 1824.
+>>> call fdget_pos(fd)
+No symbol "fdget_pos" in current context.
+>>> b fdget_pos
+Breakpoint 3 at 0xffffffff811615e3: fdget_pos. (9 locations)
+>>>
+....
+
+even though `fdget_pos` is the first thing `__x64_sys_write` does:
+
+....
+581 SYSCALL_DEFINE3(write, unsigned int, fd, const char __user *, buf,
+582         size_t, count)
+583 {
+584     struct fd f = fdget_pos(fd);
+....
+
+I also noticed that I get the same error:
+
+....
+Could not fetch register "orig_rax"; remote failure reply 'E14'
+....
+
+when trying to use:
+
+....
+fin
+....
+
+on many (all?) functions.
+
+See also: https://github.com/cirosantilli/linux-kernel-module-cheat/issues/19
+
+=== GDB view ARM system registers
+
+`info all-registers` shows some of them.
+
+The implementation is described at: https://stackoverflow.com/questions/46415059/how-to-observe-aarch64-system-registers-in-qemu/53043044#53043044
+
+=== GDB step debug multicore userland
+
+For a more minimal baremetal multicore setup, see: xref:arm-multicore[xrefstyle=full].
+
+We can set and get which cores the Linux kernel allows a program to run on with `sched_getaffinity` and `sched_setaffinity`:
+
+....
+./run --cpus 2 --eval-after './linux/sched_getaffinity.out'
+....
+
+Source: link:userland/linux/sched_getaffinity.c[]
+
+Sample output:
+
+....
+sched_getaffinity = 1 1
+sched_getcpu = 1
+sched_getaffinity = 1 0
+sched_getcpu = 0
+....
+
+Which shows us that:
+
+* initially:
+** all 2 cores were enabled as shown by `sched_getaffinity = 1 1`
+** the process was randomly assigned to run on core 1 (the second one) as shown by `sched_getcpu = 1`. If we run this several times, it will also run on core 0 sometimes.
+* then we restrict the affinity to just core 0, and we see that the program was actually moved to core 0
+
+The number of cores is modified as explained at: xref:number-of-cores[xrefstyle=full]
+
+`taskset` from the util-linux package sets the initial core affinity of a program:
+
+....
+./build-buildroot \
+  --config 'BR2_PACKAGE_UTIL_LINUX=y' \
+  --config 'BR2_PACKAGE_UTIL_LINUX_SCHEDUTILS=y' \
+;
+./run --eval-after 'taskset -c 1,1 ./linux/sched_getaffinity.out'
+....
+
+output:
+
+....
+sched_getaffinity = 0 1
+sched_getcpu = 1
+sched_getaffinity = 1 0
+sched_getcpu = 0
+....
+
+so we see that the affinity was restricted to the second core from the start.
+
+Let's do a QEMU observation to justify this example being in the repository with <<gdb-step-debug-userland-non-init,userland breakpoints>>.
+
+We will run our `./linux/sched_getaffinity.out` infinitely many times, on core 0 and core 1 alternatively:
+
+....
+./run \
+  --cpus 2 \
+  --eval-after 'i=0; while true; do taskset -c $i,$i ./linux/sched_getaffinity.out; i=$((! $i)); done' \
+  --gdb-wait \
+;
+....
+
+on another shell:
+
+....
+./run-gdb --userland "$(./getvar userland_build_dir)/linux/sched_getaffinity.out" main
+....
+
+Then, inside GDB:
+
+....
+(gdb) info threads
+  Id   Target Id         Frame
+* 1    Thread 1 (CPU#0 [running]) main () at sched_getaffinity.c:30
+  2    Thread 2 (CPU#1 [halted ]) native_safe_halt () at ./arch/x86/include/asm/irqflags.h:55
+(gdb) c
+(gdb) info threads
+  Id   Target Id         Frame
+  1    Thread 1 (CPU#0 [halted ]) native_safe_halt () at ./arch/x86/include/asm/irqflags.h:55
+* 2    Thread 2 (CPU#1 [running]) main () at sched_getaffinity.c:30
+(gdb) c
+....
+
+and we observe that `info threads` shows the actual correct core on which the process was restricted to run by `taskset`!
+
+We should also try it out with kernel modules: https://stackoverflow.com/questions/28347876/set-cpu-affinity-on-a-loadable-linux-kernel-module
+
+TODO we then tried:
+
+....
+./run --cpus 2 --eval-after './linux/sched_getaffinity_threads.out'
+....
+
+and:
+
+....
+./run-gdb --userland "$(./getvar userland_build_dir)/linux/sched_getaffinity_threads.out"
+....
+
+to switch between two simultaneous live threads with different affinities, it just didn't break on our threads:
+
+....
+b main_thread_0
+....
+
+Bibliography:
+
+* https://stackoverflow.com/questions/10490756/how-to-use-sched-getaffinity-and-sched-setaffinity-in-linux-from-c/50117787#50117787
+* https://stackoverflow.com/questions/42800801/how-to-use-gdb-to-debug-qemu-with-smp-symmetric-multiple-processors
+
+=== Linux kernel GDB scripts
+
+We source the Linux kernel GDB scripts by default for `lx-symbols`, but they also contains some other goodies worth looking into.
+
+Those scripts basically parse some in-kernel data structures to offer greater visibility with GDB.
+
+All defined commands are prefixed by `lx-`, so to get a full list just try to tab complete that.
+
+There aren't as many as I'd like, and the ones that do exist are pretty self explanatory, but let's give a few examples.
+
+Show dmesg:
+
+....
+lx-dmesg
+....
+
+Show the <<kernel-command-line-parameters>>:
+
+....
+lx-cmdline
+....
+
+Dump the device tree to a `fdtdump.dtb` file in the current directory:
+
+....
+lx-fdtdump
+pwd
+....
+
+List inserted kernel modules:
+
+....
+lx-lsmod
+....
+
+Sample output:
+
+....
+Address            Module                  Size  Used by
+0xffffff80006d0000 hello                  16384  0
+....
+
+Bibliography:
+
+* https://events.static.linuxfound.org/sites/events/files/slides/Debugging%20the%20Linux%20Kernel%20with%20GDB.pdf
+* https://wiki.linaro.org/LandingTeams/ST/GDB
+
+==== lx-ps
+
+List all processes:
+
+....
+lx-ps
+....
+
+Sample output:
+
+....
+0xffff88000ed08000 1 init
+0xffff88000ed08ac0 2 kthreadd
+....
+
+The second and third fields are obviously PID and process name.
+
+The first one is more interesting, and contains the address of the `task_struct` in memory.
+
+This can be confirmed with:
+
+....
+p ((struct task_struct)*0xffff88000ed08000
+....
+
+which contains the correct PID for all threads I've tried:
+
+....
+pid = 1,
+....
+
+TODO get the PC of the kthreads: https://stackoverflow.com/questions/26030910/find-program-counter-of-process-in-kernel Then we would be able to see where the threads are stopped in the code!
+
+On ARM, I tried:
+
+....
+task_pt_regs((struct thread_info *)((struct task_struct)*0xffffffc00e8f8000))->uregs[ARM_pc]
+....
+
+but `task_pt_regs` is a `#define` and GDB cannot see defines without `-ggdb3`: https://stackoverflow.com/questions/2934006/how-do-i-print-a-defined-constant-in-gdb which are apparently not set?
+
+Bibliography:
+
+* https://stackoverflow.com/questions/9561546/thread-aware-gdb-for-kernel
+* https://wiki.linaro.org/LandingTeams/ST/GDB
+* https://events.static.linuxfound.org/sites/events/files/slides/Debugging%20the%20Linux%20Kernel%20with%20GDB.pdf presentation: https://www.youtube.com/watch?v=pqn5hIrz3A8
+
+=== Debug the GDB remote protocol
+
+For when it breaks again, or you want to add a new feature!
+
+....
+./run --debug
+./run-gdb --before '-ex "set remotetimeout 99999" -ex "set debug remote 1"' start_kernel
+....
+
+See also: https://stackoverflow.com/questions/13496389/gdb-remote-protocol-how-to-analyse-packets
+
+[[remote-g-packet]]
+==== Remote 'g' packet reply is too long
+
+This error means that the GDB server, e.g. in QEMU, sent more registers than the GDB client expected.
+
+This can happen for the following reasons:
+
+* you set the architecture of the client wrong, often 32 vs 64 bit as mentioned at: https://stackoverflow.com/questions/4896316/gdb-remote-cross-debugging-fails-with-remote-g-packet-reply-is-too-long
+* there is a bug in the GDB server and the XML description does not match the number of registers actually sent
+* the GDB server does not send XML target descriptions and your GDB expects a different number of registers by default. E.g., gem5 d4b3e064adeeace3c3e7d106801f95c14637c12f does not send the XML files
+
+The XML target description format is described a bit further at: https://stackoverflow.com/questions/46415059/how-to-observe-aarch64-system-registers-in-qemu/53043044#53043044
+

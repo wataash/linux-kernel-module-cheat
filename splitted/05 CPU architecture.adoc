@@ -1,0 +1,125 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== CPU architecture
+
+The portability of the kernel and toolchains is amazing: change an option and most things magically work on completely different hardware.
+
+To use `arm` instead of x86 for example:
+
+....
+./build-buildroot --arch arm
+./run --arch arm
+....
+
+Debug:
+
+....
+./run --arch arm --gdb-wait
+# On another terminal.
+./run-gdb --arch arm
+....
+
+We also have one letter shorthand names for the architectures and `--arch` option:
+
+....
+# aarch64
+./run -a A
+# arm
+./run -a a
+# x86_64
+./run -a x
+....
+
+Known quirks of the supported architectures are documented in this section.
+
+=== x86_64
+
+==== ring0
+
+This example illustrates how reading from the x86 control registers with `mov crX, rax` can only be done from kernel land on ring0.
+
+From kernel land:
+
+....
+insmod ring0.ko
+....
+
+works and output the registers, for example:
+
+....
+cr0 = 0xFFFF880080050033
+cr2 = 0xFFFFFFFF006A0008
+cr3 = 0xFFFFF0DCDC000
+....
+
+However if we try to do it from userland:
+
+....
+./ring0.out
+....
+
+stdout gives:
+
+....
+Segmentation fault
+....
+
+and dmesg outputs:
+
+....
+traps: ring0.out[55] general protection ip:40054c sp:7fffffffec20 error:0 in ring0.out[400000+1000]
+....
+
+Sources:
+
+* link:kernel_modules/ring0.c[]
+* link:lkmc/ring0.h[]
+* link:userland/arch/x86_64/ring0.c[]
+
+In both cases, we attempt to run the exact same code which is shared on the `ring0.h` header file.
+
+Bibliography:
+
+* https://stackoverflow.com/questions/7415515/how-to-access-the-control-registers-cr0-cr2-cr3-from-a-program-getting-segmenta/7419306#7419306
+* https://stackoverflow.com/questions/18717016/what-are-ring-0-and-ring-3-in-the-context-of-operating-systems/44483439#44483439
+
+=== arm
+
+==== Run arm executable in aarch64
+
+TODO Can you run arm executables in the aarch64 guest? https://stackoverflow.com/questions/22460589/armv8-running-legacy-32-bit-applications-on-64-bit-os/51466709#51466709
+
+I've tried:
+
+....
+./run-toolchain --arch aarch64 gcc -- -static ~/test/hello_world.c -o "$(./getvar p9_dir)/a.out"
+./run --arch aarch64 --eval-after '/mnt/9p/data/a.out'
+....
+
+but it fails with:
+
+....
+a.out: line 1: syntax error: unexpected word (expecting ")")
+....
+
+=== MIPS
+
+We used to "support" it until f8c0502bb2680f2dbe7c1f3d7958f60265347005 (it booted) but dropped since one was testing it often.
+
+If you want to revive and maintain it, send a pull request.
+
+=== Other architectures
+
+It should not be too hard to port this repository to any architecture that Buildroot supports. Pull requests are welcome.
+

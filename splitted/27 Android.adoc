@@ -1,0 +1,269 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Android
+
+Remember: Android AOSP is a huge undocumented piece of bloatware. It's integration into this repo will likely never be super good.
+
+Verbose setup description: https://stackoverflow.com/questions/1809774/how-to-compile-the-android-aosp-kernel-and-test-it-with-the-android-emulator/48310014#48310014
+
+Download, build and run with the prebuilt AOSP QEMU emulator and the AOSP kernel:
+
+....
+./build-android \
+  --android-base-dir /path/to/your/hd \
+  --android-version 8.1.0_r60 \
+  download \
+  build \
+;
+./run-android \
+  --android-base-dir /path/to/your/hd \
+  --android-version 8.1.0_r60 \
+;
+....
+
+Sources:
+
+* link:build-android[]
+* link:run-android[]
+
+TODO how to hack the AOSP kernel, userland and emulator?
+
+Other archs work as well as usual with `--arch` parameter. However, running in non-x86 is very slow due to the lack of KVM.
+
+Tested on: `8.1.0_r60`.
+
+=== Android image structure
+
+https://source.android.com/devices/bootloader/partitions-images
+
+The messy AOSP generates a ton of images instead of just one.
+
+When the emulator launches, we can see them through QEMU `-drive` arguments:
+
+....
+emulator: argv[21] = "-initrd"
+emulator: argv[22] = "/data/aosp/8.1.0_r60/out/target/product/generic_x86_64/ramdisk.img"
+emulator: argv[23] = "-drive"
+emulator: argv[24] = "if=none,index=0,id=system,file=/path/to/aosp/8.1.0_r60/out/target/product/generic_x86_64/system-qemu.img,read-only"
+emulator: argv[25] = "-device"
+emulator: argv[26] = "virtio-blk-pci,drive=system,iothread=disk-iothread,modern-pio-notify"
+emulator: argv[27] = "-drive"
+emulator: argv[28] = "if=none,index=1,id=cache,file=/path/to/aosp/8.1.0_r60/out/target/product/generic_x86_64/cache.img.qcow2,overlap-check=none,cache=unsafe,l2-cache-size=1048576"
+emulator: argv[29] = "-device"
+emulator: argv[30] = "virtio-blk-pci,drive=cache,iothread=disk-iothread,modern-pio-notify"
+emulator: argv[31] = "-drive"
+emulator: argv[32] = "if=none,index=2,id=userdata,file=/path/to/aosp/8.1.0_r60/out/target/product/generic_x86_64/userdata-qemu.img.qcow2,overlap-check=none,cache=unsafe,l2-cache-size=1048576"
+emulator: argv[33] = "-device"
+emulator: argv[34] = "virtio-blk-pci,drive=userdata,iothread=disk-iothread,modern-pio-notify"
+emulator: argv[35] = "-drive"
+emulator: argv[36] = "if=none,index=3,id=encrypt,file=/path/to/aosp/8.1.0_r60/out/target/product/generic_x86_64/encryptionkey.img.qcow2,overlap-check=none,cache=unsafe,l2-cache-size=1048576"
+emulator: argv[37] = "-device"
+emulator: argv[38] = "virtio-blk-pci,drive=encrypt,iothread=disk-iothread,modern-pio-notify"
+emulator: argv[39] = "-drive"
+emulator: argv[40] = "if=none,index=4,id=vendor,file=/path/to/aosp/8.1.0_r60/out/target/product/generic_x86_64/vendor-qemu.img,read-only"
+emulator: argv[41] = "-device"
+emulator: argv[42] = "virtio-blk-pci,drive=vendor,iothread=disk-iothread,modern-pio-notify"
+....
+
+The root directory is the <<initrd>> given on the QEMU CLI, which `/proc/mounts` reports at:
+
+....
+rootfs on / type rootfs (ro,seclabel,size=886392k,nr_inodes=221598)
+....
+
+This contains the <<android-init>>, which through `.rc` must be mounting mounts the drives int o the right places TODO find exact point.
+
+The drive order is:
+
+....
+system
+cache
+userdata
+encryptionkey
+vendor-qemu
+....
+
+Then, on the terminal:
+
+....
+mount | grep vd
+....
+
+gives:
+
+....
+/dev/block/vda1 on /system type ext4 (ro,seclabel,relatime,data=ordered)
+/dev/block/vde1 on /vendor type ext4 (ro,seclabel,relatime,data=ordered)
+/dev/block/vdb on /cache type ext4 (rw,seclabel,nosuid,nodev,noatime,errors=panic,data=ordered)
+....
+
+and we see that the order of `vda`, `vdb`, etc. matches that in which `-drive` were given to QEMU.
+
+Tested on: `8.1.0_r60`.
+
+==== Android images read-only
+
+From `mount`, we can see that some of the mounted images are `ro`.
+
+Basically, every image that was given to QEMU as qcow2 is writable, and that qcow2 is an overlay over the actual original image.
+
+In order to make `/system` and `/vendor` writable by using qcow2 for them as well, we must use the `-writable-system` option:
+
+....
+./run-android -- -writable-system
+....
+
+* https://android.stackexchange.com/questions/110927/how-to-mount-system-rewritable-or-read-only-rw-ro/207200#207200
+* https://stackoverflow.com/questions/13089694/adb-remount-permission-denied-but-able-to-access-super-user-in-shell-android/43163693#43163693
+
+then:
+
+....
+su
+mount -o rw,remount /system
+date >/system/a
+....
+
+Now reboot, and relaunch with `-writable-system` once again to pick up the modified qcow2 images:
+
+....
+./run-android -- -writable-system
+....
+
+and the newly created file is still there:
+
+....
+date >/system/a
+....
+
+`/system` and `/vendor` can be nuked quickly with:
+
+....
+./build-android --extra-args snod
+./build-android --extra-args vnod
+....
+
+as mentioned at: https://stackoverflow.com/questions/29023406/how-to-just-build-android-system-image and on:
+
+....
+./build-android --extra-args help
+....
+
+Tested on: `8.1.0_r60`.
+
+==== Android /data partition
+
+When I install an app like F-Droid, it goes under `/data` according to:
+
+....
+find / -iname '*fdroid*'
+....
+
+and it <<disk-persistency,persists across boots>>.
+
+`/data` is behind a RW LVM device:
+
+....
+/dev/block/dm-0 on /data type ext4 (rw,seclabel,nosuid,nodev,noatime,errors=panic,data=ordered)
+....
+
+but TODO I can't find where it comes from since I don't have the CLI tools mentioned at:
+
+* https://superuser.com/questions/131519/what-is-this-dm-0-device
+* https://unix.stackexchange.com/questions/185057/where-does-lvm-store-its-configuration
+
+However, by looking at:
+
+....
+./run-android -- -help
+....
+
+we see:
+
+....
+-data <file>                   data image (default <datadir>/userdata-qemu.img
+....
+
+which confirms the suspicion that this data goes in `userdata-qemu.img`.
+
+To reset images to their original state, just remove the qcow2 overlay and regenerate it: https://stackoverflow.com/questions/54446680/how-to-reset-the-userdata-image-when-building-android-aosp-and-running-it-on-the
+
+Tested on: `8.1.0_r60`.
+
+=== Install Android apps
+
+I don't know how to download files from the web on Vanilla android, the default browser does not download anything, and there is no `wget`:
+
+* https://android.stackexchange.com/questions/6984/how-to-download-files-from-the-web-in-the-android-browser
+* https://stackoverflow.com/questions/26775079/wget-in-android-terminal
+
+Installing with `adb install` does however work: https://stackoverflow.com/questions/7076240/install-an-apk-file-from-command-prompt
+
+https://f-droid.org[F-Droid] installed fine like that, however it does not have permission to install apps: https://www.maketecheasier.com/install-apps-from-unknown-sources-android/
+
+And the `Settings` app crashes so I can't change it, logcat contains:
+
+....
+No service published for: wifip2p
+....
+
+which is mentioned at: https://stackoverflow.com/questions/47839955/android-8-settings-app-crashes-on-emulator-with-clean-aosp-build
+
+We also tried to enable it from the command line with:
+
+....
+settings put secure install_non_market_apps 1
+....
+
+as mentioned at: https://android.stackexchange.com/questions/77280/allow-unknown-sources-from-terminal-without-going-to-settings-app but it didn't work either.
+
+No person alive seems to know how to pre-install apps on AOSP: https://stackoverflow.com/questions/6249458/pre-installing-android-application
+
+Tested on: `8.1.0_r60`.
+
+=== Android init
+
+For Linux in general, see: xref:init[xrefstyle=full].
+
+The `/init` executable interprets the `/init.rc` files, which is in a custom Android init system language: https://android.googlesource.com/platform/system/core/+/ee0e63f71d90537bb0570e77aa8a699cc222cfaf/init/README.md
+
+The top of that file then sources other `.rc` files present on the root directory:
+
+....
+import /init.environ.rc
+import /init.usb.rc
+import /init.${ro.hardware}.rc
+import /vendor/etc/init/hw/init.${ro.hardware}.rc
+import /init.usb.configfs.rc
+import /init.${ro.zygote}.rc
+....
+
+TODO: how is `ro.hardware` determined? https://stackoverflow.com/questions/20572781/android-boot-where-is-the-init-hardware-rc-read-in-init-c-where-are-servic It is a system property and can be obtained with:
+
+....
+getprop ro.hardware
+....
+
+This gives:
+
+....
+ranchu
+....
+
+which is the codename for the QEMU virtual platform we are running on: https://www.oreilly.com/library/view/android-system-programming/9781787125360/9736a97c-cd09-40c3-b14d-955717648302.xhtml
+
+TODO: is it possible to add a custom `.rc` file without modifying the initrd that <<android-image-structure,gets mounted on root>>? https://stackoverflow.com/questions/9768103/make-persistent-changes-to-init-rc
+
+Tested on: `8.1.0_r60`.
+

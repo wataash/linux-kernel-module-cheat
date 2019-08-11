@@ -1,0 +1,335 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== init
+
+When the Linux kernel finishes booting, it runs an executable as the first and only userland process. This executable is called the `init` program.
+
+The init process is then responsible for setting up the entire userland (or destroying everything when you want to have fun).
+
+This typically means reading some configuration files (e.g. `/etc/initrc`) and forking a bunch of userland executables based on those files, including the very interactive shell that we end up on.
+
+systemd provides a "popular" init implementation for desktop distros as of 2017.
+
+BusyBox provides its own minimalistic init implementation which Buildroot, and therefore this repo, uses by default.
+
+The `init` program can be either an executable shell text file, or a compiled ELF file. It becomes easy to accept this once you see that the `exec` system call handles both cases equally: https://unix.stackexchange.com/questions/174062/can-the-init-process-be-a-shell-script-in-linux/395375#395375
+
+The `init` executable is searched for in a list of paths in the root filesystem, including `/init`, `/sbin/init` and a few others. For more details see: xref:path-to-init[xrefstyle=full]
+
+=== Replace init
+
+To have more control over the system, you can replace BusyBox's init with your own.
+
+The most direct way to replace `init` with our own is to just use the `init=` <<kernel-command-line-parameters,command line parameter>> directly:
+
+....
+./run --kernel-cli 'init=/lkmc/count.sh'
+....
+
+This just counts every second forever and does not give you a shell.
+
+This method is not very flexible however, as it is hard to reliably pass multiple commands and command line arguments to the init with it, as explained at: xref:init-environment[xrefstyle=full].
+
+For this reason, we have created a more robust helper method with the `--eval` option:
+
+....
+./run --eval 'echo "asdf qwer";insmod hello.ko;./linux/poweroff.out'
+....
+
+It is basically a shortcut for:
+
+....
+./run --kernel-cli 'init=/lkmc/eval_base64.sh - lkmc_eval="insmod hello.ko;./linux/poweroff.out"'
+....
+
+Source: link:rootfs_overlay/lkmc/eval_base64.sh[].
+
+This allows quoting and newlines by base64 encoding on host, and decoding on guest, see: xref:kernel-command-line-parameters-escaping[xrefstyle=full].
+
+It also automatically chooses between `init=` and `rcinit=` for you, see: xref:path-to-init[xrefstyle=full]
+
+`--eval` replaces BusyBox' init completely, which makes things more minimal, but also has has the following consequences:
+
+* `/etc/fstab` mounts are not done, notably `/proc` and `/sys`, test it out with:
++
+....
+./run --eval 'echo asdf;ls /proc;ls /sys;echo qwer'
+....
+* no shell is launched at the end of boot for you to interact with the system. You could explicitly add a `sh` at the end of your commands however:
++
+....
+./run --eval 'echo hello;sh'
+....
+
+The best way to overcome those limitations is to use: xref:init-busybox[xrefstyle=full]
+
+If the script is large, you can add it to a gitignored file and pass that to `--eval` as in:
+
+....
+echo '
+cd /lkmc
+insmod hello.ko
+./linux/poweroff.out
+' > data/gitignore.sh
+./run --eval "$(cat data/gitignore.sh)"
+....
+
+or add it to a file to the root filesystem guest and rebuild:
+
+....
+echo '#!/bin/sh
+cd /lkmc
+insmod hello.ko
+./linux/poweroff.out
+' > rootfs_overlay/lkmc/gitignore.sh
+chmod +x rootfs_overlay/lkmc/gitignore.sh
+./build-buildroot
+./run --kernel-cli 'init=/lkmc/gitignore.sh'
+....
+
+Remember that if your init returns, the kernel will panic, there are just two non-panic possibilities:
+
+* run forever in a loop or long sleep
+* `poweroff` the machine
+
+==== poweroff.out
+
+Just using BusyBox' `poweroff` at the end of the `init` does not work and the kernel panics:
+
+....
+./run --eval poweroff
+....
+
+because BusyBox' `poweroff` tries to do some fancy stuff like killing init, likely to allow userland to shutdown nicely.
+
+But this fails when we are `init` itself!
+
+BusyBox' `poweroff` works more brutally and effectively if you add `-f`:
+
+....
+./run --eval 'poweroff -f'
+....
+
+but why not just use our minimal `./linux/poweroff.out` and be done with it?
+
+....
+./run --eval './linux/poweroff.out'
+....
+
+Source: link:userland/linux/poweroff.c[]
+
+This also illustrates how to shutdown the computer from C: https://stackoverflow.com/questions/28812514/how-to-shutdown-linux-using-c-or-qt-without-call-to-system
+
+==== sleep_forever.out
+
+I dare you to guess what this does:
+
+....
+./run --eval './posix/sleep_forever.out'
+....
+
+Source: link:userland/posix/sleep_forever.c[]
+
+This executable is a convenient simple init that does not panic and sleeps instead.
+
+==== time_boot.out
+
+Get a reasonable answer to "how long does boot take in guest time?":
+
+....
+./run --eval-after './linux/time_boot.c'
+....
+
+Source: link:userland/linux/time_boot.c[]
+
+That executable writes to `dmesg` directly through `/dev/kmsg` a message of type:
+
+....
+[    2.188242] /path/to/linux-kernel-module-cheat/userland/linux/time_boot.c
+....
+
+which tells us that boot took `2.188242` seconds based on the dmesg timestamp.
+
+Bibliography: https://stackoverflow.com/questions/12683169/measure-time-taken-for-linux-kernel-from-bootup-to-userpace/46517014#46517014
+
+[[init-busybox]]
+=== Run command at the end of BusyBox init
+
+Use the `--eval-after` option is for you rely on something that BusyBox' init set up for you like `/etc/fstab`:
+
+....
+./run --eval-after 'echo asdf;ls /proc;ls /sys;echo qwer'
+....
+
+After the commands run, you are left on an interactive shell.
+
+The above command is basically equivalent to:
+
+....
+./run --kernel-cli-after-dash 'lkmc_eval="insmod hello.ko;./linux/poweroff.out;"'
+....
+
+where the `lkmc_eval` option gets evaled by our default link:rootfs_overlay/etc/init.d/S98[] startup script.
+
+Except that `--eval-after` is smarter and uses `base64` encoding.
+
+Alternatively, you can also add the comamdns to run to a new `init.d` entry to run at the end o the BusyBox init:
+
+....
+cp rootfs_overlay/etc/init.d/S98 rootfs_overlay/etc/init.d/S99.gitignore
+vim rootfs_overlay/etc/init.d/S99.gitignore
+./build-buildroot
+./run
+....
+
+and they will be run automatically before the login prompt.
+
+Scripts under `/etc/init.d` are run by `/etc/init.d/rcS`, which gets called by the line `::sysinit:/etc/init.d/rcS` in link:rootfs_overlay/etc/inittab[`/etc/inittab`].
+
+=== Path to init
+
+The init is selected at:
+
+* initrd or initramfs system: `/init`, a custom one can be set with the `rdinit=` <<kernel-command-line-parameters,kernel command line parameter>>
+* otherwise: default is `/sbin/init`, followed by some other paths, a custom one can be set with `init=`
+
+More details: https://unix.stackexchange.com/questions/30414/what-can-make-passing-init-path-to-program-to-the-kernel-not-start-program-as-i/430614#430614
+
+=== Init environment
+
+Documented at https://www.kernel.org/doc/html/v4.14/admin-guide/kernel-parameters.html[]:
+
+____
+The kernel parses parameters from the kernel command line up to "-"; if it doesn't recognize a parameter and it doesn't contain a '.', the parameter gets passed to init: parameters with '=' go into init's environment, others are passed as command line arguments to init. Everything after "-" is passed as an argument to init.
+____
+
+And you can try it out with:
+
+....
+./run --kernel-cli 'init=/lkmc/linux/init_env_poweroff.out - asdf=qwer zxcv'
+....
+
+Output:
+
+....
+args:
+/lkmc/linux/init_env_poweroff.out
+-
+zxcv
+
+env:
+HOME=/
+TERM=linux
+asdf=qwer
+....
+
+Source: link:userland/linux/init_env_poweroff.c[].
+
+==== init arguments
+
+The annoying dash `-` gets passed as a parameter to `init`, which makes it impossible to use this method for most non custom executables.
+
+Arguments with dots that come after `-` are still treated specially (of the form `subsystem.somevalue`) and disappear, from args, e.g.:
+
+....
+./run --kernel-cli 'init=/lkmc/linux/init_env_poweroff.out - /lkmc/linux/poweroff.out'
+....
+
+outputs:
+
+....
+args
+/lkmc/linux/init_env_poweroff.out
+-
+ab
+....
+
+so see how `a.b` is gone.
+
+The simple workaround is to just create a shell script that does it, e.g. as we've done at: link:rootfs_overlay/lkmc/gem5_exit.sh[].
+
+==== init environment env
+
+Wait, where do `HOME` and `TERM` come from? (greps the kernel). Ah, OK, the kernel sets those by default: https://github.com/torvalds/linux/blob/94710cac0ef4ee177a63b5227664b38c95bbf703/init/main.c#L173
+
+....
+const char *envp_init[MAX_INIT_ENVS+2] = { "HOME=/", "TERM=linux", NULL, };
+....
+
+==== BusyBox shell init environment
+
+On top of the Linux kernel, the BusyBox `/bin/sh` shell will also define other variables.
+
+We can explore the shenanigans that the shell adds on top of the Linux kernel with:
+
+....
+./run --kernel-cli 'init=/bin/sh'
+....
+
+From there we observe that:
+
+....
+env
+....
+
+gives:
+
+....
+SHLVL=1
+HOME=/
+TERM=linux
+PWD=/
+....
+
+therefore adding `SHLVL` and `PWD` to the default kernel exported variables.
+
+Furthermore, to increase confusion, if you list all non-exported shell variables https://askubuntu.com/questions/275965/how-to-list-all-variables-names-and-their-current-values with:
+
+....
+set
+....
+
+then it shows more variables, notably:
+
+....
+PATH='/sbin:/usr/sbin:/bin:/usr/bin'
+....
+
+===== BusyBox shell initrc files
+
+Login shells source some default files, notably:
+
+....
+/etc/profile
+$HOME/.profile
+....
+
+In our case, `HOME` is set to `/` presumably by `init` at: https://git.busybox.net/busybox/tree/init/init.c?id=5059653882dbd86e3bbf48389f9f81b0fac8cd0a#n1114
+
+We provide `/.profile` from link:rootfs_overlay/.profile[], and use the default BusyBox `/etc/profile`.
+
+The shell knows that it is a login shell if the first character of `argv[0]` is `-`, see also: https://stackoverflow.com/questions/2050961/is-argv0-name-of-executable-an-accepted-standard-or-just-a-common-conventi/42291142#42291142
+
+When we use just `init=/bin/sh`, the Linux kernel sets `argv[0]` to `/bin/sh`, which does not start with `-`.
+
+However, if you use `::respawn:-/bin/sh` on inttab described at <<tty>>, BusyBox' init sets `argv[0][0]` to `-`, and so does `getty`. This can be observed with:
+
+....
+cat /proc/$$/cmdline
+....
+
+where `$$` is the PID of the shell itself: https://stackoverflow.com/questions/21063765/get-pid-in-shell-bash
+
+Bibliography: https://unix.stackexchange.com/questions/176027/ash-profile-configuration-file
+

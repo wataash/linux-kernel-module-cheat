@@ -1,0 +1,286 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Networking
+
+=== Enable networking
+
+We disable networking by default because it starts an userland process, and we want to keep the number of userland processes to a minimum to make the system more understandable as explained at: xref:resource-tradeoff-guidelines[xrefstyle=full]
+
+To enable networking on Buildroot, simply run:
+
+....
+ifup -a
+....
+
+That command goes over all (`-a`) the interfaces in `/etc/network/interfaces` and brings them up.
+
+Then test it with:
+
+....
+wget google.com
+cat index.html
+....
+
+Disable networking with:
+
+....
+ifdown -a
+....
+
+To enable networking by default after boot, use the methods documented at <<init-busybox>>.
+
+=== ping
+
+`ping` does not work within QEMU by default, e.g.:
+
+....
+ping google.com
+....
+
+hangs after printing the header:
+
+....
+PING google.com (216.58.204.46): 56 data bytes
+....
+
+https://unix.stackexchange.com/questions/473448/how-to-ping-from-the-qemu-guest-to-an-external-url
+
+=== Guest host networking
+
+In this section we discuss how to interact between the guest and the host through networking.
+
+First ensure that you can access the external network since that is easier to get working, see: xref:networking[xrefstyle=full].
+
+==== Host to guest networking
+
+===== nc host to guest
+
+With `nc` we can create the most minimal example possible as a sanity check.
+
+On guest run:
+
+....
+nc -l -p 45455
+....
+
+Then on host run:
+
+....
+echo asdf | nc localhost 45455
+....
+
+`asdf` appears on the guest.
+
+This uses:
+
+* BusyBox' `nc` utility, which is enabled with `CONFIG_NC=y`
+* `nc` from the `netcat-openbsd` package on an Ubuntu 18.04 host
+
+Only this specific port works by default since we have forwarded it on the QEMU command line.
+
+We us this exact procedure to connect to <<gdbserver>>.
+
+===== ssh into guest
+
+Not enabled by default due to the build / runtime overhead. To enable, build with:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_OPENSSH=y'
+....
+
+Then inside the guest turn on sshd:
+
+....
+./sshd.sh
+....
+
+Source: link:rootfs_overlay/lkmc/sshd.sh[]
+
+And finally on host:
+
+....
+ssh root@localhost -p 45456
+....
+
+Bibliography: https://unix.stackexchange.com/questions/124681/how-to-ssh-from-host-to-guest-using-qemu/307557#307557
+
+===== gem5 host to guest networking
+
+Could not do port forwarding from host to guest, and therefore could not use `gdbserver`: https://stackoverflow.com/questions/48941494/how-to-do-port-forwarding-from-guest-to-host-in-gem5
+
+==== Guest to host networking
+
+First <<enable-networking>>.
+
+Then in the host, start a server:
+
+....
+python -m SimpleHTTPServer 8000
+....
+
+And then in the guest, find the IP we need to hit with:
+
+....
+ip rounte
+....
+
+which gives:
+
+.....
+default via 10.0.2.2 dev eth0
+10.0.2.0/24 dev eth0 scope link  src 10.0.2.15
+.....
+
+so we use in the guest:
+
+....
+wget 10.0.2.2:8000
+....
+
+Bibliography: https://serverfault.com/questions/769874/how-to-forward-a-port-from-guest-to-host-in-qemu-kvm/951835#951835
+
+=== 9P
+
+The https://en.wikipedia.org/wiki/9P_(protocol)[9p protocol] allows the guest to mount a host directory.
+
+Both QEMU and <<9p-gem5>> support 9P.
+
+==== 9P vs NFS
+
+All of 9P and NFS (and sshfs) allow sharing directories between guest and host.
+
+Advantages of 9P
+
+* requires `sudo` on the host to mount
+* we could share a guest directory to the host, but this would require running a server on the guest, which adds <<resource-tradeoff-guidelines,simulation overhead>>
++
+Furthermore, this would be inconvenient, since what we usually want to do is to share host cross built files with the guest, and to do that we would have to copy the files over after the guest starts the server.
+* QEMU implements 9P natively, which makes it very stable and convenient, and must mean it is a simpler protocol than NFS as one would expect.
++
+This is not the case for gem5 7bfb7f3a43f382eb49853f47b140bfd6caad0fb8 unfortunately, which relies on the https://github.com/chaos/diod[diod] host daemon, although it is not unfeasible that future versions could implement it natively as well.
+
+Advantages of NFS:
+
+* way more widely used and therefore stable and available, not to mention that it also works on real hardware.
+* the name does not start with a digit, which is an invalid identifier in all programming languages known to man. Who in their right mind would call a software project as such? It does not even match the natural order of Plan 9; Plan then 9: P9!
+
+==== 9P getting started
+
+As usual, we have already set everything up for you. On host:
+
+....
+cd "$(./getvar p9_dir)"
+uname -a > host
+....
+
+Guest:
+
+....
+cd /mnt/9p/data
+cat host
+uname -a > guest
+....
+
+Host:
+
+....
+cat guest
+....
+
+The main ingredients for this are:
+
+* `9P` settings in our <<kernel-configs-about,kernel configs>>
+* `9p` entry on our link:rootfs_overlay/etc/fstab[]
++
+Alternatively, you could also mount your own with:
++
+....
+mkdir /mnt/my9p
+mount -t 9p -o trans=virtio,version=9p2000.L host0 /mnt/my9p
+....
+* Launch QEMU with `-virtfs` as in your link:run[] script
++
+When we tried:
++
+....
+security_model=mapped
+....
++
+writes from guest failed due to user mismatch problems: https://serverfault.com/questions/342801/read-write-access-for-passthrough-9p-filesystems-with-libvirt-qemu
+
+Bibliography:
+
+* https://superuser.com/questions/628169/how-to-share-a-directory-with-the-host-without-networking-in-qemu
+* https://wiki.qemu.org/Documentation/9psetup
+
+==== 9P gem5
+
+TODO seems possible! Lets do it:
+
+* http://gem5.org/wiki/images/b/b8/Summit2017_wa_devlib.pdf
+* http://gem5.org/WA-gem5
+
+==== NFS
+
+TODO: get working.
+
+<<9p>> is better with emulation, but let's just get this working for fun.
+
+First make sure that this works: xref:guest-to-host-networking[xrefstyle=full].
+
+Then, build the kernel with NFS support:
+
+....
+./build-linux --config-fragment linux_config/nfs
+....
+
+Now on host:
+
+....
+sudo apt-get install nfs-kernel-server
+....
+
+Now edit `/etc/exports` to contain:
+
+....
+/tmp *(rw,sync,no_root_squash,no_subtree_check)
+....
+
+and restart the server:
+
+....
+sudo systemctl restart nfs-kernel-server
+....
+
+Now on guest:
+
+....
+mkdir /mnt/nfs
+mount -t nfs 10.0.2.2:/tmp /mnt/nfs
+....
+
+TODO: failing with:
+
+....
+mount: mounting 10.0.2.2:/tmp on /mnt/nfs failed: No such device
+....
+
+And now the `/tmp` directory from host is not mounted on guest!
+
+If you don't want to start the NFS server after the next boot automatically so save resources, https://askubuntu.com/questions/19320/how-to-enable-or-disable-services[do]:
+
+....
+systemctl disable nfs-kernel-server
+....
+

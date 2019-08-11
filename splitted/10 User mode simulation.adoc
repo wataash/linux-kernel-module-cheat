@@ -1,0 +1,511 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== User mode simulation
+
+Both QEMU and gem5 have an user mode simulation mode in addition to full system simulation that we consider elsewhere in this project.
+
+In QEMU, it is called just <<qemu-user-mode-getting-started,"user mode">>, and in gem5 it is called <<gem5-syscall-emulation-mode,syscall emulation mode>>.
+
+In both, the basic idea is the same.
+
+User mode simulation takes regular userland executables of any arch as input and executes them directly, without booting a kernel.
+
+Instead of simulating the full system, it translates normal instructions like in full system mode, but magically forwards system calls to the host OS.
+
+Advantages over full system simulation:
+
+* the simulation may <<user-mode-vs-full-system-benchmark,run faster>> since you don't have to simulate the Linux kernel and several device models
+* you don't need to build your own kernel or root filesystem, which saves time. You still need a toolchain however, but the pre-packaged ones may work fine.
+
+Disadvantages:
+
+* lower guest to host portability:
+** TODO confirm: host OS == guest OS?
+** TODO confirm: the host Linux kernel should be newer than the kernel the executable was built for.
++
+It may still work even if that is not the case, but could fail is a missing system call is reached.
++
+The target Linux kernel of the executable is a GCC toolchain build-time configuration.
+** emulator implementers have to keep up with libc changes, some of which break even a C hello world due setup code executed before main.
++
+See also: xref:user-mode-simulation-with-glibc[xrefstyle=full]
+* cannot be used to test the Linux kernel or any devices, and results are less representative of a real system since we are faking more
+
+=== QEMU user mode getting started
+
+Let's run link:userland/c/print_argv.c[] built with the Buildroot toolchain on QEMU user mode:
+
+....
+./build user-mode-qemu
+./run \
+  --userland userland/c/print_argv.c \
+  --userland-args='asdf "qw er"' \
+;
+....
+
+Output:
+
+....
+/path/to/linux-kernel-module-cheat/out/userland/default/x86_64/c/print_argv.out
+asdf
+qw er
+....
+
+`./run --userland` path resolution is analogous to <<baremetal-setup-getting-started,that of `./run --baremetal`>>.
+
+`./build user-mode-qemu` first builds Buildroot, and then runs `./build-userland`, which is further documented at: xref:userland-setup[xrefstyle=full]. It also builds QEMU. If you ahve already done a <<qemu-buildroot-setup>> previously, this will be very fast.
+
+If you modify the userland programs, rebuild simply with:
+
+....
+./build-userland
+....
+
+==== User mode GDB
+
+It's nice when <<gdb,the obvious>> just works, right?
+
+....
+./run \
+  --arch aarch64 \
+  --gdb-wait \
+  --userland userland/c/print_argv.c \
+  --userland-args 'asdf "qw er"' \
+;
+....
+
+and on another shell:
+
+....
+./run-gdb \
+  --arch aarch64 \
+  --userland userland/c/print_argv.c \
+  main \
+;
+....
+
+Or alternatively, if you are using <<tmux>>, do everything in one go with:
+
+....
+./run \
+  --arch aarch64 \
+  --gdb \
+  --userland userland/c/print_argv.c \
+  --userland-args 'asdf "qw er"' \
+;
+....
+
+To stop at the very first instruction of a freestanding program, just use `--no-continue`. A good example of this is shown at: xref:freestanding-programs[xrefstyle=full].
+
+=== User mode tests
+
+Automatically run all userland tests that can be run in user mode simulation, and check that they exit with status 0:
+
+....
+./build --all-archs test-executables-userland
+./test-executables --all-archs --all-emulators
+....
+
+Or just for QEMU:
+
+....
+./build --all-archs test-executables-userland-qemu
+./test-executables --all-archs --emulator qemu
+....
+
+Source: link:test-executables[]
+
+This script skips a manually configured list of tests, notably:
+
+* tests that depend on a full running kernel and cannot be run in user mode simulation, e.g. those that rely on kernel modules
+* tests that require user interaction
+* tests that take perceptible ammounts of time
+* known bugs we didn't have time to fix ;-)
+
+Tests under link:userland/libs/[] depend on certain libraries being available on the target, e.g. <<blas>> for link:userland/libs/openblas[]. They are not run by default, but can be enabled with `--package` and `--package-all`.
+
+The gem5 tests require building statically with build id `static`, see also: xref:gem5-syscall-emulation-mode[xrefstyle=full]. TODO automate this better.
+
+See: xref:test-this-repo[xrefstyle=full] for more useful testing tips.
+
+=== User mode Buildroot executables
+
+If you followed <<qemu-buildroot-setup>>, you can now run the executables created by Buildroot directly as:
+
+....
+./run \
+  --userland "$(./getvar buildroot_target_dir)/bin/echo" \
+  --userland-args='asdf' \
+;
+....
+
+To easily explore the userland executable environment interactively, you can do:
+
+....
+./run \
+  --arch aarch64 \
+  --userland "$(./getvar --arch aarch64 buildroot_target_dir)/bin/sh" \
+  --terminal \
+;
+....
+
+or:
+
+....
+./run \
+  --arch aarch64 \
+  --userland "$(./getvar --arch aarch64 buildroot_target_dir)/bin/sh"  \
+  --userland-args='-c "uname -a && pwd"' \
+;
+....
+
+Here is an interesting examples of this: xref:linux-test-project[xrefstyle=full]
+
+=== User mode simulation with glibc
+
+At 125d14805f769104f93c510bedaa685a52ec025d we <<libc-choice,moved Buildroot from uClibc to glibc>>, and caused some user mode pain, which we document here.
+
+==== FATAL: kernel too old
+
+glibc has a check for kernel version, likely obtained from the `uname` syscall, and if the kernel is not new enough, it quits.
+
+Both gem5 and QEMU however allow setting the reported `uname` version from the command line, which we do to always match our toolchain.
+
+QEMU by default copies the host `uname` value, but we always override it in our scripts.
+
+Determining the right number to use for the kernel version is of course highly non-trivial and would require an extensive userland test suite, which most emulator don't have.
+
+....
+./run --arch aarch64 --kernel-version 4.18 --userland userland/posix/uname.c
+....
+
+Source: link:userland/posix/uname.c[].
+
+The QEMU source that does this is at: https://github.com/qemu/qemu/blob/v3.1.0/linux-user/syscall.c#L8931
+
+Bibliography:
+
+* https://stackoverflow.com/questions/48959349/how-to-solve-fatal-kernel-too-old-when-running-gem5-in-syscall-emulation-se-m
+* https://stackoverflow.com/questions/53085048/how-to-compile-and-run-an-executable-in-gem5-syscall-emulation-mode-with-se-py/53085049#53085049
+* https://gem5-review.googlesource.com/c/public/gem5/+/15855
+
+The ID is just hardcoded on the source:
+
+==== stack smashing detected
+
+For some reason QEMU / glibc x86_64 picks up the host libc, which breaks things.
+
+Other archs work as they different host libc is skipped. <<user-mode-static-executables>> also work.
+
+We have worked around this with with https://bugs.launchpad.net/qemu/+bug/1701798/comments/12 from the thread: https://bugs.launchpad.net/qemu/+bug/1701798 by creating the file: link:rootfs_overlay/etc/ld.so.cache[] which is a symlink to a file that cannot exist: `/dev/null/nonexistent`.
+
+Reproduction:
+
+....
+rm -f "$(./getvar buildroot_target_dir)/etc/ld.so.cache"
+./run --userland userland/c/hello.c
+./run --userland userland/c/hello.c --qemu-which host
+....
+
+Outcome:
+
+....
+*** stack smashing detected ***: <unknown> terminated
+qemu: uncaught target signal 6 (Aborted) - core dumped
+....
+
+To get things working again, restore `ld.so.cache` with:
+
+....
+./build-buildroot
+....
+
+I've also tested on an Ubuntu 16.04 guest and the failure is different one:
+
+....
+qemu: uncaught target signal 4 (Illegal instruction) - core dumped
+....
+
+A non-QEMU-specific example of stack smashing is shown at: https://stackoverflow.com/questions/1345670/stack-smashing-detected/51897264#51897264
+
+Tested at: 2e32389ebf1bedd89c682aa7b8fe42c3c0cf96e5 + 1.
+
+=== User mode static executables
+
+Example:
+
+....
+./build-userland \
+  --arch aarch64 \
+  --static \
+;
+./run \
+  --arch aarch64 \
+  --static \
+  --userland userland/c/print_argv.c \
+  --userland-args 'asdf "qw er"' \
+;
+....
+
+Running dynamically linked executables in QEMU requires pointing it to the root filesystem with the `-L` option so that it can find the dynamic linker and shared libraries.
+
+We pass `-L` by default, so everything just works.
+
+However, in case something goes wrong, you can also try statically linked executables, since this mechanism tends to be a bit more stable, for example:
+
+* gem5 user mode currently only supports static executables as mentioned at: xref:gem5-syscall-emulation-mode[xrefstyle=full]
+* QEMU x86_64 guest on x86_64 host was failing with <<stack-smashing-detected>>, but we found a workaround
+
+==== User mode static executables with dynamic libraries
+
+One limitation of static executables is that Buildroot mostly only builds dynamic versions of libraries (the libc is an exception).
+
+So programs that rely on those libraries might not compile as GCC can't find the `.a` version of the library.
+
+For example, if we try to build <<blas>> statically:
+
+....
+./build-userland --package openblas --static -- userland/libs/openblas/hello.c
+....
+
+it fails with:
+
+....
+ld: cannot find -lopenblas
+....
+
+`g++` and pthreads also causes issues: https://stackoverflow.com/questions/35116327/when-g-static-link-pthread-cause-segmentation-fault-why
+
+As a consequence, the following fails:
+
+....
+./run --userland userland/cpp/atomic.cpp --static
+....
+
+with error:
+
+....
+qemu-x86_64: /path/to/linux-kernel-module-cheat/submodules/qemu/accel/tcg/cpu-exec.c:700: cpu_exec: Assertion `!have_mmap_lock()' failed.                                                                                                                            
+qemu-x86_64: /path/to/linux-kernel-module-cheat/submodules/qemu/accel/tcg/cpu-exec.c:700: cpu_exec: Assertion `!have_mmap_lock()' failed.
+....
+
+and if we manually build and run natively on host it segfaults.
+
+If we hack the compilation command to do instead:
+
+....
+-pthread -Wl,--whole-archive -lpthread -Wl,--no-whole-archive
+....
+
+then it works. We should automate that at some point.
+
+=== gem5 syscall emulation mode
+
+Less robust than QEMU's, but still usable:
+
+* https://stackoverflow.com/questions/48986597/when-should-you-use-full-system-fs-vs-syscall-emulation-se-with-userland-program
+
+There are much more unimplemented syscalls in gem5 than in QEMU. Many of those are trivial to implement however.
+
+As of 185c2730cc78d5adda683d76c0e3b35e7cb534f0, dynamically linked executables only work on x86, and they can only use the host libraries, which is ugly:
+
+* https://stackoverflow.com/questions/50542222/how-to-run-a-dynamically-linked-executable-syscall-emulation-mode-se-py-in-gem5
+* https://www.mail-archive.com/gem5-users@gem5.org/msg15585.html
+
+If you try dynamically linked executables on ARM, they fail with:
+
+....
+fatal: Unable to open dynamic executable's interpreter.
+....
+
+So let's just play with some static ones:
+
+....
+./build-userland \
+  --arch aarch64 \
+  --static \
+;
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --userland userland/c/print_argv.c \
+  --userland-args 'asdf "qw er"' \
+;
+....
+
+TODO: how to escape spaces on the command line arguments?
+
+<<user-mode-gdb,GDB step debug>> also works normally on gem5:
+
+....
+./run \
+  --arch aarch64 \
+  --emulator gem5 \
+  --gdb-wait \
+  --static \
+  --userland userland/c/print_argv.c \
+  --userland-args 'asdf "qw er"' \
+;
+./run-gdb \
+  --arch aarch64 \
+  --emulator gem5 \
+  --static \
+  --userland userland/c/print_argv.c \
+  main \
+;
+....
+
+==== gem5 syscall emulation exit status
+
+As of gem5 7fa4c946386e7207ad5859e8ade0bbfc14000d91, the crappy `se.py` script does not forward the exit status of syscall emulation mode, you can test it with:
+
+....
+./run --dry-run --emulator gem5 --static --userland userland/c/false.c
+....
+
+Source: link:userland/c/false.c[].
+
+Then manually run the generated gem5 CLI, and do:
+
+....
+echo $?
+....
+
+and the output is always `0`.
+
+Instead, it just outputs a message to stdout just like for <<m5-fail>>:
+
+....
+Simulated exit code not 0! Exit code is 1
+....
+
+which we parse in link:run[] and then exit with the correct result ourselves...
+
+Related thread: https://stackoverflow.com/questions/56032347/is-there-a-way-to-identify-if-gem5-run-got-over-successfully
+
+==== gem5 syscall emulation mode program stdin
+
+gem5 shows its own stdout to terminal, and does not allow you to type stdin to programs.
+
+Instead, you must pass stdin non-interactively with the through a file with the `--se.py --input` option, e.g.:
+
+....
+printf a > f
+./run --emulator gem5 --userland userland/c/getchar.c --static -- --input f
+....
+
+leads to gem5 output:
+
+....
+enter a character: you entered: a
+....
+
+Source: link:userland/c/getchar.c[]
+
+==== User mode vs full system benchmark
+
+Let's see if user mode runs considerably faster than full system or not.
+
+First we build Dhrystone manually statically since dynamic linking is broken in gem5 as explained at: xref:gem5-syscall-emulation-mode[xrefstyle=full].
+
+gem5 user mode:
+
+....
+./build-buildroot --arch arm --config 'BR2_PACKAGE_DHRYSTONE=y'
+make \
+  -B \
+  -C "$(./getvar --arch arm buildroot_build_build_dir)/dhrystone-2" \
+  CC="$(./run-toolchain --arch arm --print-tool gcc)" \
+  CFLAGS=-static \
+;
+time \
+  ./run \
+  --arch arm \
+  --emulator gem5 \
+  --userland "$(./getvar --arch arm buildroot_build_build_dir)/dhrystone-2/dhrystone" \
+  --userland-args 'asdf qwer' \
+;
+....
+
+gem5 full system:
+
+....
+time \
+  ./run \
+  --arch arm \
+  --eval-after './gem5.sh' \
+  --emulator gem5
+  --gem5-readfile 'dhrystone 100000' \
+;
+....
+
+QEMU user mode:
+
+....
+time qemu-arm "$(./getvar --arch arm buildroot_build_build_dir)/dhrystone-2/dhrystone" 100000000
+....
+
+QEMU full system:
+
+....
+time \
+  ./run \
+  --arch arm \
+  --eval-after 'time dhrystone 100000000;./linux/poweroff.out' \
+;
+....
+
+Result on <<p51>> at bad30f513c46c1b0995d3a10c0d9bc2a33dc4fa0:
+
+* gem5 user: 33 seconds
+* gem5 full system: 51 seconds
+* QEMU user: 45 seconds
+* QEMU full system: 223 seconds
+
+=== QEMU user mode quirks
+
+==== QEMU user mode does not show stdout immediately
+
+At 8d8307ac0710164701f6e14c99a69ee172ccbb70 + 1, I noticed that if you run link:userland/posix/count.c[]:
+
+....
+./run --userland userland/posix/count_to.c --userland-args 3
+....
+
+it first waits for 3 seconds, then the program exits, and then it dumps all the stdout at once, instead of counting once every second as expected.
+
+The same can be reproduced by copying the raw QEMU command and piping it through `tee`, so I don't think it is a bug in our setup:
+
+....
+/path/to/linux-kernel-module-cheat/out/qemu/default/x86_64-linux-user/qemu-x86_64 \
+  -L /path/to/linux-kernel-module-cheat/out/buildroot/build/default/x86_64/target \
+  /path/to/linux-kernel-module-cheat/out/userland/default/x86_64/posix/count.out \
+  3 \
+| tee
+....
+
+TODO: investigate further and then possibly post on QEMU mailing list.
+
+===== QEMU user mode does not show errors
+
+Similarly to <<qemu-user-mode-does-not-show-stdout-immediately>>, QEMU error messages do not show at all through pipes.
+
+In particular, it does not say anything if you pass it a non-existing executable:
+
+....
+qemu-x86_64 asdf | cat
+....
+
+So we just check ourselves manually
+

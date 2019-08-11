@@ -1,0 +1,106 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== gdbserver
+
+Step debug userland processes to understand how they are talking to the kernel.
+
+First build `gdbserver` into the root filesystem:
+
+....
+./build-buildroot --config 'BR2_PACKAGE_GDB=y'
+....
+
+Then on guest, to debug link:userland/linux/rand_check.c[]:
+
+....
+./gdbserver.sh ./c/print_argv.out asdf qwer
+....
+
+Source: link:rootfs_overlay/lkmc/gdbserver.sh[].
+
+And on host:
+
+....
+./run-gdb --gdbserver --userland userland/c/print_argv.c main
+....
+
+or alternatively with the path to the executable itself:
+
+....
+./run --gdbserver --userland "$(./getvar userland_build_dir)/c/print_argv.out"
+....
+
+Bibliography: https://reverseengineering.stackexchange.com/questions/8829/cross-debugging-for-arm-mips-elf-with-qemu-toolchain/16214#16214
+
+=== gdbserver BusyBox
+
+Analogous to <<gdb-step-debug-userland-processes>>:
+
+....
+./gdbserver.sh ls
+....
+
+on host you need:
+
+....
+./run-gdb --gdbserver --userland "$(./getvar buildroot_build_build_dir)"/busybox-*/busybox ls_main
+....
+
+=== gdbserver libc
+
+Our setup gives you the rare opportunity to step debug libc and other system libraries.
+
+For example in the guest:
+
+....
+./gdbserver.sh ./posix/count.out
+....
+
+Then on host:
+
+....
+./run-gdb --gdbserver --userland userland/posix/count.c main
+....
+
+and inside GDB:
+
+....
+break sleep
+continue
+....
+
+And you are now left inside the `sleep` function of our default libc implementation uclibc https://cgit.uclibc-ng.org/cgi/cgit/uclibc-ng.git/tree/libc/unistd/sleep.c?h=v1.0.30#n91[`libc/unistd/sleep.c`]!
+
+You can also step into the `sleep` call:
+
+....
+step
+....
+
+This is made possible by the GDB command that we use by default:
+
+....
+set sysroot ${common_buildroot_build_dir}/staging
+....
+
+which automatically finds unstripped shared libraries on the host for us.
+
+See also: https://stackoverflow.com/questions/8611194/debugging-shared-libraries-with-gdbserver/45252113#45252113
+
+=== gdbserver dynamic loader
+
+TODO: try to step debug the dynamic loader. Would be even easier if `starti` is available: https://stackoverflow.com/questions/10483544/stopping-at-the-first-machine-code-instruction-in-gdb
+
+Bibliography: https://stackoverflow.com/questions/20114565/gdb-step-into-dynamic-linkerld-so-code
+

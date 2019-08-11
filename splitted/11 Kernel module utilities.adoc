@@ -1,0 +1,131 @@
+
+:description: The perfect emulation setup to study and develop the <<linux-kernel>> v5.2.1, kernel modules, <<qemu-buildroot-setup,QEMU>>, <<gem5-buildroot-setup,gem5>> and x86_64, ARMv7 and ARMv8 <<userland-assembly,userland>> and <<baremetal-setup,baremetal>> assembly, <<c,ANSI C>>, <<cpp,C++>> and <<posix,POSIX>>. <<gdb>> and <<kgdb>> just work. Powered by <<about-the-qemu-buildroot-setup,Buildroot>> and <<about-the-baremetal-setup,crosstool-NG>>.  Highly automated. Thoroughly documented. Automated <<test-this-repo,tests>>. "Tested" in an Ubuntu 18.04 host.
+:idprefix:
+:idseparator: -
+:nofooter:
+:sectanchors:
+:sectlinks:
+:sectnumlevels: 6
+:sectnums:
+:toc-title:
+:toc: macro
+:toclevels: 6
+
+== Kernel module utilities
+
+=== insmod
+
+https://git.busybox.net/busybox/tree/modutils/insmod.c?h=1_29_3[Provided by BusyBox]:
+
+....
+./run --eval-after 'insmod hello.ko'
+....
+
+=== myinsmod
+
+If you are feeling raw, you can insert and remove modules with our own minimal module inserter and remover!
+
+....
+# init_module
+./linux/myinsmod.out hello.ko
+# finit_module
+./linux/myinsmod.out hello.ko "" 1
+./linux/myrmmod.out hello
+....
+
+which teaches you how it is done from C code.
+
+Source:
+
+* link:userland/linux/myinsmod.c[]
+* link:userland/linux/myrmmod.c[]
+
+The Linux kernel offers two system calls for module insertion:
+
+* `init_module`
+* `finit_module`
+
+and:
+
+....
+man init_module
+....
+
+documents that:
+
+____
+The finit_module() system call is like init_module(), but reads the module to be loaded from the file descriptor fd. It is useful when the authenticity of a kernel module can be determined from its location in the filesystem; in cases where that is possible, the overhead of using cryptographically signed modules to determine the authenticity of a module can be avoided. The param_values argument is as for init_module().
+____
+
+`finit` is newer and was added only in v3.8. More rationale: https://lwn.net/Articles/519010/
+
+Bibliography: https://stackoverflow.com/questions/5947286/how-to-load-linux-kernel-modules-from-c-code
+
+=== modprobe
+
+Implemented as a BusyBox applet by default: https://git.busybox.net/busybox/tree/modutils/modprobe.c?h=1_29_stable
+
+`modprobe` searches for modules installed under:
+
+....
+ls /lib/modules/<kernel_version>
+....
+
+and specified in the `modules.order` file.
+
+This is the default install path for `CONFIG_SOME_MOD=m` modules built with `make modules_install` in the Linux kernel tree, with root path given by `INSTALL_MOD_PATH`, and therefore canonical in that sense.
+
+Currently, there are only two kinds of kernel modules that you can try out with `modprobe`:
+
+* modules built with Buildroot, see: xref:kernel_modules-buildroot-package[xrefstyle=full]
+* modules built from the kernel tree itself, see: xref:dummy-irq[xrefstyle=full]
+
+We are not installing out custom `./build-modules` modules there, because:
+
+* we don't know the right way. Why is there no `install` or `install_modules` target for kernel modules?
++
+This can of course be solved by running Buildroot in verbose mode, and copying whatever it is doing, initial exploration at: https://stackoverflow.com/questions/22783793/how-to-install-kernel-modules-from-source-code-error-while-make-process/53169078#53169078
+* we would have to think how to not have to include the kernel modules twice in the root filesystem, but still have <<9p>> working for fast development as described at: xref:your-first-kernel-module-hack[xrefstyle=full]
+
+=== kmod
+
+The more "reference" kernel.org implementation of `lsmod`, `insmod`, `rmmod`, etc.: https://git.kernel.org/pub/scm/utils/kernel/kmod/kmod.git
+
+Default implementation on desktop distros such as Ubuntu 16.04, where e.g.:
+
+....
+ls -l /bin/lsmod
+....
+
+gives:
+
+....
+lrwxrwxrwx 1 root root 4 Jul 25 15:35 /bin/lsmod -> kmod
+....
+
+and:
+
+....
+dpkg -l | grep -Ei
+....
+
+contains:
+
+....
+ii  kmod                                        22-1ubuntu5                                         amd64        tools for managing Linux kernel modules
+....
+
+BusyBox also implements its own version of those executables, see e.g. <<modprobe>>. Here we will only describe features that differ from kmod to the BusyBox implementation.
+
+==== module-init-tools
+
+Name of a predecessor set of tools.
+
+==== kmod modprobe
+
+kmod's `modprobe` can also load modules under different names to avoid conflicts, e.g.:
+
+....
+sudo modprobe vmhgfs -o vm_hgfs
+....
+
